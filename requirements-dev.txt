@@ -1,0 +1,15 @@
+# Development / CI dependencies. Installed in the server image so tests,
+# linting, and type checks run inside `docker compose exec app ...`.
+
+-r requirements-base.txt
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+
+# Formatting / linting / typing
+black>=23.0.0
+isort>=5.12.0
+mypy>=1.5.0
+ruff>=0.1.0

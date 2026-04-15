@@ -1,0 +1,170 @@
+[
+  {
+    "question": "How many doors are there on the second floor of the building?",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(d:IfcDoor) WHERE s.Name CONTAINS '02' RETURN count(d)",
+    "category": "relationship",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "What is the size of the smallest window in the building?",
+    "gold_cypher": "MATCH (w:IfcWindow) RETURN min(w.OverallWidth * w.OverallHeight)",
+    "category": "property_filter",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "What is the total number of treads in the building?",
+    "gold_cypher": "MATCH (sf:IfcStairFlight) RETURN sum(sf.NumberOfTreads)",
+    "category": "basic_query",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "What is the height of the tallest column in the building?",
+    "gold_cypher": "MATCH (c:IfcColumn) RETURN max(c.Length)",
+    "category": "basic_query",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "How many rooms are located on the second floor?",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:DECOMPOSES]->(sp:IfcSpace) WHERE s.Name CONTAINS '02' RETURN count(sp)",
+    "category": "relationship",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "Which storey has the highest number of doors?",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(d:IfcDoor) RETURN s.Name, count(d) ORDER BY count(d) DESC LIMIT 1",
+    "category": "relationship",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "What is the average ceiling height of all hallways in the building?",
+    "gold_cypher": "MATCH (sp:IfcSpace) WHERE sp.Name CONTAINS 'Hallway' RETURN avg(sp.CeilingHeight)",
+    "category": "property_filter",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "What is the total surface area of all the walls on the second floor?",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(w:IfcWall) WHERE s.Name CONTAINS '02' RETURN sum(w.NetSideArea)",
+    "category": "relationship",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "What is the highest riser on the stairs of the building?",
+    "gold_cypher": "MATCH (sf:IfcStairFlight) RETURN max(sf.RiserHeight)",
+    "category": "basic_query",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "Can you generate a detailed description of a window in the building using all its available properties and values?",
+    "gold_cypher": "MATCH (w:IfcWindow) RETURN w LIMIT 1",
+    "category": "basic_query",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "Which properties of windows are related to their orientation or position in the building?",
+    "gold_cypher": "MATCH (w:IfcWindow) RETURN keys(w)",
+    "category": "basic_query",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "What is the fire rating of the largest door in the building?",
+    "gold_cypher": "MATCH (d:IfcDoor) WITH d ORDER BY d.OverallWidth * d.OverallHeight DESC LIMIT 1 RETURN d.FireRating",
+    "category": "property_filter",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "Which walls on the ground floor are classified as load-bearing and have a height greater than 3 meters?",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(w:IfcWall) WHERE (s.Name CONTAINS '00' OR s.Name CONTAINS 'Ground') AND w.LoadBearing = true AND w.Height > 3000 RETURN w",
+    "category": "property_filter",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "What is the total glazed area of windows on the second floor?",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(w:IfcWindow) WHERE s.Name CONTAINS '02' RETURN sum(w.OverallWidth * w.OverallHeight)",
+    "category": "relationship",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "Which windows are installed on walls with a height greater than 3 meters?",
+    "gold_cypher": "MATCH (w:IfcWindow)-[:FILLS]->(o:IfcOpeningElement)<-[:HAS_OPENING]-(wall:IfcWall) WHERE wall.Height > 3000 RETURN w",
+    "category": "relationship",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "What is the biggest size window that I could fit in the smallest wall?",
+    "gold_cypher": "MATCH (w:IfcWindow) WITH max(w.OverallWidth * w.OverallHeight) as maxWinArea MATCH (wall:IfcWall) WITH maxWinArea, wall ORDER BY wall.NetSideArea ASC LIMIT 1 RETURN maxWinArea, wall",
+    "category": "reasoning",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "The number of windows in the building can be considered reasonable?",
+    "gold_cypher": "MATCH (w:IfcWindow) RETURN count(w)",
+    "category": "reasoning",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "What is the total structural load supported by load-bearing walls on each floor?",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(w:IfcWall) WHERE w.LoadBearing = true RETURN s.Name, sum(w.StructuralLoad)",
+    "category": "reasoning",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "Which walls are supporting other structural elements in the building?",
+    "gold_cypher": "MATCH (w:IfcWall)-[:SUPPORTS]->(e) RETURN w, e",
+    "category": "relationship",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "What is the total area enclosed by the walls on the second floor?",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:DECOMPOSES]->(sp:IfcSpace) WHERE s.Name CONTAINS '02' RETURN sum(sp.NetFloorArea)",
+    "category": "relationship",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "What is the window-to-wall ratio in the building?",
+    "gold_cypher": "MATCH (w:IfcWindow) WITH sum(w.OverallWidth * w.OverallHeight) as winArea MATCH (wall:IfcWall) RETURN winArea / sum(wall.NetSideArea)",
+    "category": "reasoning",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "Are there any rooms connected to more than one room through doors?",
+    "gold_cypher": "MATCH (sp1:IfcSpace)-[:BOUNDS]->(d:IfcDoor)<-[:BOUNDS]-(sp2:IfcSpace) WITH sp1, count(sp2) as connections WHERE connections > 1 RETURN sp1",
+    "category": "relationship",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "What is the ratio of usable floor area to the gross area for the second floor?",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:DECOMPOSES]->(sp:IfcSpace) WHERE s.Name CONTAINS '02' RETURN sum(sp.NetFloorArea) / sum(sp.GrossFloorArea)",
+    "category": "reasoning",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "Which ramps in the building are accessible according to universal design standards?",
+    "gold_cypher": "MATCH (r:IfcRamp) WHERE r.Slope < 0.083 RETURN r",
+    "category": "property_filter",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "Are there any irregular-shaped rooms?",
+    "gold_cypher": "MATCH (sp:IfcSpace) WHERE sp.IsIrregular = true RETURN sp",
+    "category": "property_filter",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "Which corridors have doors wider than 900mm?",
+    "gold_cypher": "MATCH (sp:IfcSpace)-[:BOUNDS]->(d:IfcDoor) WHERE (sp.Name CONTAINS 'Corridor' OR sp.Name CONTAINS 'Hallway') AND d.OverallWidth > 900 RETURN sp",
+    "category": "relationship",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "How many windows are in each of the facades?",
+    "gold_cypher": "MATCH (w:IfcWindow) RETURN w.Orientation, count(w)",
+    "category": "basic_query",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "Which walls in the building are fire-resistant?",
+    "gold_cypher": "MATCH (w:IfcWall) WHERE w.FireResistance > 0 RETURN w",
+    "category": "property_filter",
+    "difficulty": "Medium"
+  }
+]

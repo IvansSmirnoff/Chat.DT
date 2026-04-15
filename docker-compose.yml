@@ -1,0 +1,72 @@
+# Constrained NL2Cypher for BIM
+# Docker Compose configuration for development environment
+
+services:
+  # Neo4j Graph Database
+  neo4j:
+    image: neo4j:5-community
+    container_name: nl2cypher-neo4j
+    ports:
+      - "8006:7474"  # HTTP (Neo4j Browser)
+      - "7687:7687"  # Bolt protocol
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_server_memory_heap_initial__size=256m
+      - NEO4J_server_memory_heap_max__size=512m
+      - NEO4J_server_memory_pagecache_size=256m
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - nl2cypher-network
+
+  # Python Application
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: nl2cypher-app
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-gemini-1.5-pro}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - IFC_FILE_PATH=/app/data/model.ifc
+      - IDS_FILE_PATH=/app/data/requirements.ids
+      - DEBUG=${DEBUG:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data
+      - ./config:/app/config:ro
+      - ./tests:/app/tests:ro
+      - ./results:/app/results
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    networks:
+      - nl2cypher-network
+    stdin_open: true
+    tty: true
+
+volumes:
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+
+networks:
+  nl2cypher-network:
+    driver: bridge

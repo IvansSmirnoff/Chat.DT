@@ -1,0 +1,16 @@
+# LLM-side dependencies: install on top of the base requirements in a
+# Colab notebook (A100/T4 for LocalLLMEngine + Outlines) or on a server
+# that also needs to run Gemini/OpenAI experiments.
+
+-r requirements-base.txt
+
+# Cloud providers
+google-generativeai>=0.3.0
+openai>=1.0.0
+
+# Local provider (Outlines-constrained decoding for CYPHER_STRICT)
+torch>=2.0.0
+transformers>=4.35.0
+accelerate>=0.24.0
+sentencepiece>=0.1.99
+outlines>=1.0.0
