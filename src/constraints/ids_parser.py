@@ -39,7 +39,7 @@ NAMESPACES = {
 class PropertyConstraint:
     """
     Represents a property constraint from IDS.
-    
+
     Attributes:
         name: Property name (e.g., "FireRating")
         property_set: Property set name (e.g., "Pset_WallCommon")
@@ -53,12 +53,22 @@ class PropertyConstraint:
     allowed_values: Set[str] = field(default_factory=set)
     cardinality: str = "optional"
 
+    @classmethod
+    def from_dict(cls, data: Dict) -> "PropertyConstraint":
+        return cls(
+            name=data.get("name", ""),
+            property_set=data.get("property_set"),
+            data_type=data.get("data_type"),
+            allowed_values=set(data.get("allowed_values") or []),
+            cardinality=data.get("cardinality", "optional"),
+        )
+
 
 @dataclass
 class EntityConstraint:
     """
     Represents an entity constraint from IDS.
-    
+
     Attributes:
         name: IFC entity name (e.g., "IFCWALL")
         predefined_type: Optional predefined type filter
@@ -67,6 +77,16 @@ class EntityConstraint:
     name: str
     predefined_type: Optional[str] = None
     properties: List[PropertyConstraint] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "EntityConstraint":
+        return cls(
+            name=data.get("name", ""),
+            predefined_type=data.get("predefined_type"),
+            properties=[
+                PropertyConstraint.from_dict(p) for p in (data.get("properties") or [])
+            ],
+        )
 
 
 @dataclass
@@ -132,10 +152,10 @@ class IDSSchema:
     def get_properties_for_entity(self, entity: str) -> Set[str]:
         """
         Get all valid properties for a specific entity.
-        
+
         Args:
             entity: Entity name (case-insensitive)
-            
+
         Returns:
             Set of property names applicable to this entity
         """
@@ -143,6 +163,26 @@ class IDSSchema:
         if entity_upper in self.entity_constraints:
             return {p.name for p in self.entity_constraints[entity_upper].properties}
         return self.properties  # Fallback to all properties
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "IDSSchema":
+        """Rehydrate from a dict produced by ``dataclasses.asdict`` (sets become lists)."""
+        property_values = {
+            k: set(v or []) for k, v in (data.get("property_values") or {}).items()
+        }
+        entity_constraints = {
+            k: EntityConstraint.from_dict(v)
+            for k, v in (data.get("entity_constraints") or {}).items()
+        }
+        return cls(
+            title=data.get("title", ""),
+            version=data.get("version", ""),
+            entities=set(data.get("entities") or []),
+            properties=set(data.get("properties") or []),
+            property_sets=set(data.get("property_sets") or []),
+            entity_constraints=entity_constraints,
+            property_values=property_values,
+        )
 
 
 # =============================================================================

@@ -867,6 +867,78 @@ python -m src.eval.cli \
 
 ---
 
+## Remote Query API (Colab → Neo4j)
+
+The `api` service (FastAPI) is the only process reachable from outside the
+Docker network. Neo4j's Bolt port is **not** published on the host — every
+remote query goes through authenticated HTTPS/HTTP to `api` and is proxied to
+Neo4j over the internal network.
+
+### Configure + run
+
+```bash
+# 1) Set a strong shared token in .env
+python -c "import secrets; print('API_BEARER_TOKEN=' + secrets.token_urlsafe(48))" >> .env
+
+# 2) Bring up the stack (neo4j + app workbench + api)
+docker compose up -d --build
+
+# 3) Liveness (no auth) + readiness (auth, verifies Neo4j)
+curl http://localhost:8000/health
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/health/ready
+```
+
+Interactive OpenAPI docs: `http://localhost:8000/docs`.
+
+### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET`  | `/health` | Liveness (unauthenticated) |
+| `GET`  | `/health/ready` | Pings Neo4j |
+| `POST` | `/cypher/execute` | Run Cypher; returns extracted IDs (and optional rows) |
+| `POST` | `/cypher/validate` | EXPLAIN-only syntax check (SVR) |
+| `GET`  | `/test-set` | Server-side test cases (Question / Gold_Cypher / ...) |
+| `GET`  | `/gold/{index}` | Pre-executed gold IDs for a test case |
+| `POST` | `/evaluate` | Full SVR + SCR + EA for a generated output |
+| `GET`  | `/schema/valid-labels` | Valid Neo4j labels (for client-side SCR) |
+| `GET`  | `/schema/valid-properties` | Valid property names |
+| `GET`  | `/schema/vocabulary` | Merged IDS + IFC vocabulary |
+
+### Colab example
+
+```python
+import os, requests
+
+API = "http://<your-host>:8000"
+HEADERS = {"Authorization": f"Bearer {os.environ['API_BEARER_TOKEN']}"}
+
+# LLM (in Colab) produces a Cypher query; we only execute + score remotely.
+generated = "MATCH (n:IfcWall) RETURN n.GlobalId"
+
+# Option A: raw execution, score locally using src/eval/scoring.py
+r = requests.post(f"{API}/cypher/execute",
+                  json={"query": generated}, headers=HEADERS, timeout=60)
+r.raise_for_status()
+print(len(r.json()["ids"]), "ids returned")
+
+# Option B: one-shot evaluate against a known gold test case
+r = requests.post(f"{API}/evaluate", headers=HEADERS, timeout=60, json={
+    "question": "Find all walls",
+    "output": generated,
+    "output_type": "cypher",
+    "gold_index": 0,
+    "experiment_setting": "cypher_soft",
+})
+print(r.json())  # EvaluationResult dict with svr/scr/ea/precision/recall/f1
+```
+
+Scoring lives in both places on purpose: `src/eval/scoring.py` is Neo4j-free
+and can be imported in Colab to re-score a saved CSV of predictions without
+hitting the server at all.
+
+---
+
 ## Configuration
 
 **File:** `src/config.py`
@@ -884,6 +956,9 @@ python -m src.eval.cli \
 | `ifc_file_path` | `IFC_FILE_PATH` | `/app/data/model.ifc` | Path to IFC file |
 | `ids_file_path` | `IDS_FILE_PATH` | `/app/data/requirements.ids` | Path to IDS file |
 | `model_dump_path` | `MODEL_DUMP_PATH` | - | Path to model dump JSON (for Direct QA) |
+| `api_bearer_token` | `API_BEARER_TOKEN` | _(empty)_ | Shared secret for the FastAPI proxy. Empty value disables the API (503 on every auth'd call) |
+| `api_host` | `API_HOST` | `0.0.0.0` | Interface the FastAPI app binds to |
+| `api_port` | `API_PORT` | `8000` | Port the FastAPI app listens on |
 
 ### ExperimentSetting Enum
 

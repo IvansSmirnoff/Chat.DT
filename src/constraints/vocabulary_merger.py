@@ -40,7 +40,7 @@ class PropertyType(str, Enum):
 class PropertyVocabulary:
     """
     Vocabulary definition for a single property.
-    
+
     Attributes:
         name: Property name
         property_type: Classification (STRICT, BOOLEAN, NUMERIC, STRING, OPEN)
@@ -55,7 +55,23 @@ class PropertyVocabulary:
     data_type: Optional[str] = None
     source: str = "ifc"
     description: Optional[str] = None
-    
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "PropertyVocabulary":
+        prop_type = data.get("property_type", PropertyType.OPEN.value)
+        if isinstance(prop_type, PropertyType):
+            pt = prop_type
+        else:
+            pt = PropertyType(prop_type)
+        return cls(
+            name=data.get("name", ""),
+            property_type=pt,
+            allowed_values=set(data.get("allowed_values") or []),
+            data_type=data.get("data_type"),
+            source=data.get("source", "ifc"),
+            description=data.get("description"),
+        )
+
     def is_strict(self) -> bool:
         """Check if this property has strict constraints."""
         return self.property_type == PropertyType.STRICT and bool(self.allowed_values)
@@ -104,6 +120,20 @@ class EntityVocabulary:
     def get_all_property_names(self) -> Set[str]:
         """Get all property names for this entity."""
         return set(self.properties.keys())
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "EntityVocabulary":
+        return cls(
+            name=data.get("name", ""),
+            properties={
+                k: PropertyVocabulary.from_dict(v)
+                for k, v in (data.get("properties") or {}).items()
+            },
+            relations=set(data.get("relations") or []),
+            count=data.get("count", 0),
+            from_ids=data.get("from_ids", False),
+            from_ifc=data.get("from_ifc", False),
+        )
 
 
 @dataclass
@@ -155,6 +185,35 @@ class CombinedVocabulary:
         if entity_name in self.entities:
             return self.entities[entity_name].properties
         return {}
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "CombinedVocabulary":
+        """Rehydrate from a bundle JSON dict (produced via ``dataclasses.asdict``).
+
+        ``ifc_schema`` is intentionally dropped on the way back in — the heavy
+        IFCModelSchema is only used during merging, not during prompt building
+        or grammar generation, so the client side never needs it. ``ids_schema``
+        is rehydrated via ``IDSSchema.from_dict`` so downstream code that probes
+        ``vocab.ids_schema`` still works.
+        """
+        ids_blob = data.get("ids_schema")
+        ids_schema = IDSSchema.from_dict(ids_blob) if isinstance(ids_blob, dict) else None
+
+        return cls(
+            entities={
+                k: EntityVocabulary.from_dict(v)
+                for k, v in (data.get("entities") or {}).items()
+            },
+            all_properties={
+                k: PropertyVocabulary.from_dict(v)
+                for k, v in (data.get("all_properties") or {}).items()
+            },
+            strict_properties=set(data.get("strict_properties") or []),
+            open_properties=set(data.get("open_properties") or []),
+            all_relations=set(data.get("all_relations") or []),
+            ids_schema=ids_schema,
+            ifc_schema=None,
+        )
 
 
 # =============================================================================

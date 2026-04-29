@@ -3,12 +3,12 @@
 
 services:
   # Neo4j Graph Database
+  # No host ports published: Neo4j is reachable only on the internal
+  # `nl2cypher-network`. The authenticated `api` service is the single
+  # ingress from the host/internet.
   neo4j:
     image: neo4j:5-community
     container_name: nl2cypher-neo4j
-    ports:
-      - "8006:7474"  # HTTP (Neo4j Browser)
-      - "7687:7687"  # Bolt protocol
     environment:
       - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
       - NEO4J_PLUGINS=["apoc"]
@@ -60,6 +60,42 @@ services:
       - nl2cypher-network
     stdin_open: true
     tty: true
+
+  # FastAPI server — authenticated proxy to Neo4j for Colab clients
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: nl2cypher-api
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
+      - API_BEARER_TOKEN=${API_BEARER_TOKEN:-}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - IFC_FILE_PATH=/app/data/model.ifc
+      - IDS_FILE_PATH=/app/data/requirements.ids
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - ./config:/app/config:ro
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    networks:
+      - nl2cypher-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/health').read()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   neo4j_data:

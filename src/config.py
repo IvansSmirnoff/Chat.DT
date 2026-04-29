@@ -142,18 +142,38 @@ class Settings(BaseSettings):
         default="INFO",
         description="Logging level",
     )
-    
+
+    # API Server
+    api_bearer_token: SecretStr = Field(
+        default=SecretStr(""),
+        description="Bearer token required for authenticated API requests. "
+                    "Empty disables the API (all requests return 503).",
+    )
+    api_host: str = Field(
+        default="0.0.0.0",
+        description="Interface for the FastAPI app to bind to",
+    )
+    api_port: int = Field(
+        default=8000,
+        description="Port for the FastAPI app",
+    )
+
     @property
     def neo4j_password_value(self) -> str:
         """Get the Neo4j password as a plain string."""
         return self.neo4j_password.get_secret_value()
-    
+
     @property
     def llm_api_key_value(self) -> Optional[str]:
         """Get the LLM API key as a plain string."""
         if self.llm_api_key:
             return self.llm_api_key.get_secret_value()
         return None
+
+    @property
+    def api_bearer_token_value(self) -> str:
+        """Get the API bearer token as a plain string ('' if unset)."""
+        return self.api_bearer_token.get_secret_value()
 
 
 # Global settings instance
