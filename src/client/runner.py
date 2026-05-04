@@ -35,6 +35,37 @@ from src.llm_engine import BaseLLMEngine, create_llm_engine
 logger = logging.getLogger(__name__)
 
 
+def _configure_logging(level: int = logging.INFO) -> None:
+    """Idempotently install a stdout handler so Colab shows runner + engine logs."""
+    root = logging.getLogger()
+    has_runner_handler = any(
+        getattr(h, "_chatdt_runner_handler", False) for h in root.handlers
+    )
+    if not has_runner_handler:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
+        handler._chatdt_runner_handler = True  # type: ignore[attr-defined]
+        root.addHandler(handler)
+    root.setLevel(level)
+    # Quiet noisy third-party loggers.
+    for noisy in ("httpx", "httpcore", "urllib3", "huggingface_hub"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def _maybe_tqdm(iterable, **kwargs):
+    """Wrap iterable in tqdm if available; otherwise return as-is."""
+    try:
+        from tqdm.auto import tqdm  # type: ignore
+    except ImportError:
+        return iterable
+    return tqdm(iterable, **kwargs)
+
+
 CSV_FIELDS = [
     "index",
     "question",
@@ -105,9 +136,19 @@ class ApiExperimentRunner:
 
     def setup(self) -> None:
         """Load bundle, rehydrate schemas, build the LLM engine, fetch test set."""
+        _configure_logging()
+        logger.info("setup: checking API health")
         self._check_api_health()
+        logger.info("setup: loading bundle from %s", self.config.bundle_path)
         self._load_bundle()
+        logger.info(
+            "setup: building LLM engine (provider=%s model=%s) — this may "
+            "download/load weights",
+            self.settings.llm_provider.value,
+            self.settings.llm_model_name,
+        )
         self._build_engine()
+        logger.info("setup: fetching test set from API")
         self.test_cases = self.client.get_test_set()
         if not self.test_cases:
             raise RuntimeError(
@@ -200,7 +241,14 @@ class ApiExperimentRunner:
         rows: List[Dict[str, Any]] = []
         total = len(self.test_cases)
 
-        for case in self.test_cases:
+        iterator = _maybe_tqdm(
+            self.test_cases,
+            total=total,
+            desc=f"{setting.value}",
+            unit="q",
+            dynamic_ncols=True,
+        )
+        for case in iterator:
             idx = case.get("index")
             question = case.get("question", "")
             category = case.get("category", "")
