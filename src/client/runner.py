@@ -111,8 +111,9 @@ class ApiExperimentRunner:
         self.test_cases = self.client.get_test_set()
         if not self.test_cases:
             raise RuntimeError(
-                "API returned an empty test set. Confirm the server has loaded "
-                "data/test_set.csv and pre-executed gold queries (see lifespan logs)."
+                "API returned an empty test set. Confirm the server has a "
+                "data/test_set.csv or data/extended_test_set.json file mounted "
+                "and that gold queries pre-executed at startup (see api lifespan logs)."
             )
         logger.info("Fetched %d test cases from API", len(self.test_cases))
 

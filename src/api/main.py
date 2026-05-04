@@ -23,7 +23,18 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_TEST_SET = Path("/app/data/test_set.csv")
+DEFAULT_TEST_SET_CANDIDATES = (
+    Path("/app/data/test_set.csv"),
+    Path("/app/data/test_set.json"),
+    Path("/app/data/extended_test_set.json"),
+)
+
+
+def _resolve_default_test_set() -> Optional[Path]:
+    for candidate in DEFAULT_TEST_SET_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _build_state() -> ApiState:
@@ -79,8 +90,9 @@ def _build_state() -> ApiState:
     # Test set + gold executions (best-effort)
     test_cases: list = []
     gold_id_sets: dict = {}
-    test_set_path: Optional[Path] = DEFAULT_TEST_SET if DEFAULT_TEST_SET.exists() else None
+    test_set_path: Optional[Path] = _resolve_default_test_set()
     if test_set_path:
+        logger.info("Resolved test-set path: %s", test_set_path)
         try:
             test_cases = load_test_set(test_set_path)
             gold_id_sets = execute_gold_queries(test_cases, driver)
@@ -89,6 +101,11 @@ def _build_state() -> ApiState:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Test set / gold execution failed: %s", exc)
+    else:
+        logger.warning(
+            "No test-set file found in %s",
+            [str(p) for p in DEFAULT_TEST_SET_CANDIDATES],
+        )
 
     return ApiState(
         driver=driver,

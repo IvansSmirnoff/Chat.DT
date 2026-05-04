@@ -81,46 +81,63 @@ class ExperimentConfig:
 
 def load_test_set(file_path: Path) -> List[Dict[str, str]]:
     """
-    Load test set from CSV file.
-    
-    Expected columns:
-    - Question: Natural language question
-    - Gold_Cypher: Expected Cypher query (ground truth)
-    
-    Optional columns:
-    - Category: Question category for analysis
-    - Difficulty: Easy/Medium/Hard
-    
+    Load a test set from CSV or JSON.
+
+    CSV expects columns ``Question``, ``Gold_Cypher`` (case-insensitive),
+    optional ``Category`` and ``Difficulty``. JSON expects a list of objects
+    with keys ``question``, ``gold_cypher`` (or any of the legacy aliases),
+    optional ``category``, ``difficulty``.
+
     Args:
-        file_path: Path to CSV file
-        
+        file_path: Path to ``.csv`` or ``.json`` test-set file.
+
     Returns:
-        List of test case dictionaries
+        List of test case dictionaries with the keys
+        ``question, gold_cypher, category, difficulty``.
     """
-    test_cases = []
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        
-        for row in reader:
-            # Normalize column names
-            case = {}
-            for key, value in row.items():
-                normalized_key = key.strip().lower().replace(' ', '_')
-                case[normalized_key] = value.strip() if value else ""
-            
-            # Map to standard names
-            test_case = {
-                "question": case.get("question", case.get("nl_query", "")),
-                "gold_cypher": case.get("gold_cypher", case.get("cypher", case.get("expected_cypher", ""))),
-                "category": case.get("category", ""),
-                "difficulty": case.get("difficulty", ""),
-            }
-            
-            if test_case["question"]:
-                test_cases.append(test_case)
-    
-    logger.info(f"Loaded {len(test_cases)} test cases from {file_path}")
+    path = Path(file_path)
+    suffix = path.suffix.lower()
+
+    raw_rows: List[Dict[str, Any]] = []
+
+    if suffix == ".json":
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict) and "cases" in payload:
+            payload = payload["cases"]
+        if not isinstance(payload, list):
+            raise ValueError(
+                f"Test set JSON at {path} must be a list of objects (or "
+                f"{{'cases': [...]}}); got {type(payload).__name__}."
+            )
+        raw_rows = list(payload)
+    else:
+        with open(path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            raw_rows = list(reader)
+
+    test_cases: List[Dict[str, str]] = []
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        case: Dict[str, str] = {}
+        for key, value in row.items():
+            normalized_key = str(key).strip().lower().replace(" ", "_")
+            case[normalized_key] = str(value).strip() if value is not None else ""
+
+        test_case = {
+            "question": case.get("question", case.get("nl_query", "")),
+            "gold_cypher": case.get(
+                "gold_cypher", case.get("cypher", case.get("expected_cypher", ""))
+            ),
+            "category": case.get("category", ""),
+            "difficulty": case.get("difficulty", ""),
+        }
+
+        if test_case["question"]:
+            test_cases.append(test_case)
+
+    logger.info(f"Loaded {len(test_cases)} test cases from {path}")
     return test_cases
 
 

@@ -28,7 +28,7 @@ import logging
 import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -98,18 +98,25 @@ def collect_graph_stats(uri: str, user: str, password: str) -> Dict[str, Any]:
 
 def build_bundle(
     ifc_path: Path,
-    ids_path: Path,
+    ids_path: Optional[Path],
     neo4j_uri: str,
     neo4j_user: str,
     neo4j_password: str,
     include_model_dump: bool = True,
 ) -> Dict[str, Any]:
-    """Assemble the bundle dict. Pure orchestration over existing modules."""
-    logger.info(f"Building vocabulary from {ids_path.name} + {ifc_path.name}")
+    """Assemble the bundle dict. IDS is optional — when omitted, the vocabulary
+    is built from IFC alone and ``ids_schema`` is ``None`` (Setting 2 / Setting 4
+    fall back to soft constraints because there is no enforced vocabulary)."""
+    if ids_path is not None:
+        logger.info(f"Building vocabulary from {ids_path.name} + {ifc_path.name}")
+    else:
+        logger.info(f"Building vocabulary from {ifc_path.name} (no IDS)")
     vocab = build_combined_vocabulary(ids_path=ids_path, ifc_path=ifc_path)
 
-    logger.info(f"Parsing IDS: {ids_path}")
-    ids_schema = parse_ids_file(ids_path)
+    ids_schema = None
+    if ids_path is not None:
+        logger.info(f"Parsing IDS: {ids_path}")
+        ids_schema = parse_ids_file(ids_path)
 
     model_dump = []
     if include_model_dump:
@@ -123,7 +130,7 @@ def build_bundle(
         "schema_version": 1,
         "source": {
             "ifc_file": ifc_path.name,
-            "ids_file": ids_path.name,
+            "ids_file": ids_path.name if ids_path is not None else None,
         },
         "combined_vocabulary": vocab,
         "ids_schema": ids_schema,
@@ -141,6 +148,11 @@ def main():
     )
     parser.add_argument("--ifc", type=Path, help="Path to IFC file (default: from settings)")
     parser.add_argument("--ids", type=Path, help="Path to IDS file (default: from settings)")
+    parser.add_argument(
+        "--no-ids",
+        action="store_true",
+        help="Force-skip IDS even if the settings default points at an existing file.",
+    )
     parser.add_argument("--out", type=Path, required=True, help="Output bundle JSON path")
     parser.add_argument("--no-model-dump", action="store_true", help="Skip model dump (smaller bundle)")
     parser.add_argument("--pretty", action="store_true", help="Indent JSON (larger file)")
@@ -148,12 +160,38 @@ def main():
 
     settings = get_settings()
     ifc_path = args.ifc or Path(settings.ifc_file_path)
-    ids_path = args.ids or Path(settings.ids_file_path)
 
-    for p, label in [(ifc_path, "IFC"), (ids_path, "IDS")]:
-        if not p.exists():
-            logger.error(f"{label} file not found: {p}")
-            sys.exit(1)
+    if not ifc_path.exists():
+        logger.error(f"IFC file not found: {ifc_path}")
+        sys.exit(1)
+
+    # IDS is optional. Resolve from CLI > settings; treat empty/missing/--no-ids as "no IDS".
+    ids_path: Optional[Path] = None
+    if args.no_ids:
+        if args.ids is not None:
+            logger.error("--no-ids and --ids cannot be combined.")
+            sys.exit(2)
+        logger.info("--no-ids set, building bundle without IDS.")
+    else:
+        ids_candidate: Optional[Path]
+        if args.ids is not None:
+            ids_candidate = args.ids
+        elif settings.ids_file_path and str(settings.ids_file_path).strip():
+            ids_candidate = Path(settings.ids_file_path)
+        else:
+            ids_candidate = None
+
+        if ids_candidate is not None:
+            if ids_candidate.exists():
+                ids_path = ids_candidate
+            elif args.ids is not None:
+                logger.error(f"IDS file not found: {ids_candidate}")
+                sys.exit(1)
+            else:
+                logger.warning(
+                    f"IDS path from settings does not exist ({ids_candidate}); "
+                    "building bundle without IDS."
+                )
 
     bundle = build_bundle(
         ifc_path=ifc_path,
@@ -176,9 +214,12 @@ def main():
 
     size_kb = args.out.stat().st_size / 1024
     logger.info(f"Bundle written: {args.out} ({size_kb:.1f} KB)")
+    ids_count = (
+        len(bundle["ids_schema"].entities) if bundle["ids_schema"] is not None else 0
+    )
     logger.info(
         f"Contents: vocabulary ({len(bundle['combined_vocabulary'].entities)} entities), "
-        f"IDS ({len(bundle['ids_schema'].entities)} entities), "
+        f"IDS ({ids_count} entities), "
         f"model_dump ({len(bundle['model_dump'])} elements), "
         f"graph_stats ({len(bundle['graph_stats'].get('labels', {}))} labels)"
     )

@@ -905,7 +905,7 @@ Interactive OpenAPI docs: `http://localhost:8000/docs`.
 | `GET`  | `/schema/valid-properties` | Valid property names |
 | `GET`  | `/schema/vocabulary` | Merged IDS + IFC vocabulary |
 
-### Colab example
+### Colab example (raw HTTP)
 
 ```python
 import os, requests
@@ -936,6 +936,53 @@ print(r.json())  # EvaluationResult dict with svr/scr/ea/precision/recall/f1
 Scoring lives in both places on purpose: `src/eval/scoring.py` is Neo4j-free
 and can be imported in Colab to re-score a saved CSV of predictions without
 hitting the server at all.
+
+### Colab example (full experiment loop)
+
+The repo ships a higher-level Colab client (`src.client.ApiClient` +
+`src.client.runner.ApiExperimentRunner`) and two ready-to-run notebooks:
+
+- `notebooks/run_experiment_local.ipynb` — GPU runtime, all four settings
+  including `CYPHER_STRICT` (Outlines + HF).
+- `notebooks/run_experiment_cloud.ipynb` — CPU runtime, Settings 1–3 with
+  Gemini or OpenAI.
+
+Both notebooks follow the same flow:
+
+```python
+from pathlib import Path
+from src.client.api_client import ApiClient
+from src.client.runner import ApiExperimentRunner, ApiRunnerConfig
+from src.config import ExperimentSetting
+
+client = ApiClient(os.environ['API_BASE_URL'], os.environ['API_BEARER_TOKEN'])
+client.health_ready()  # fail fast on bad token / unreachable Neo4j
+
+runner = ApiExperimentRunner(
+    client=client,
+    config=ApiRunnerConfig(
+        bundle_path=Path('bundle_barcelona.json'),
+        output_dir=Path('results'),
+        name='local_run',
+        settings=list(ExperimentSetting),  # all 4 (or any subset)
+    ),
+)
+runner.setup()              # rehydrate vocab + IDS, build LLM engine
+runner.run_comparison()     # fetch test set → generate → /evaluate per case
+```
+
+Build the bundle on the server first:
+
+```bash
+docker compose exec app python scripts/build_bundle.py \
+  --ifc /app/data/Barcelona.ifc --out /app/data/bundle_barcelona.json
+# IDS is optional: pass --no-ids to skip it
+```
+
+The bundle carries `combined_vocabulary`, `ids_schema` (or `null`), `model_dump`,
+and `graph_stats`. The Colab side rebuilds the Python objects via
+`CombinedVocabulary.from_dict` / `IDSSchema.from_dict` — Bolt is never used
+from Colab, only the authenticated API on port 8000.
 
 ---
 
@@ -1314,6 +1361,76 @@ lives there (one tree, no duplication).
 ---
 
 ## Appendix B: Development Changelog
+
+### 2026-04-29: API-driven Colab client + bundle round-trip + JSON test sets
+
+Made the Colab notebooks actually runnable end-to-end against a remote
+deployment. Bolt is now genuinely sealed inside the Docker network — every
+external client (laptops, Colab GPU runtimes) drives experiments through the
+authenticated FastAPI service.
+
+#### What changed
+
+- **New `src/client/` package** (kept outside `src.eval` to avoid pulling
+  `neo4j_exec`):
+  - `api_client.py` — `ApiClient(base_url, token)` wraps `httpx.Client`,
+    handles bearer auth, raises `ApiClientError` on non-2xx with the response
+    body included.
+  - `runner.py` — `ApiExperimentRunner` + `ApiRunnerConfig`. Loads the bundle,
+    rehydrates schemas, builds the LLM in-process, drives the test loop
+    against the API, writes per-setting CSV + JSON summaries.
+- **Bundle round-trip is now lossless.** Added `from_dict()` classmethods on
+  `CombinedVocabulary`, `EntityVocabulary`, `PropertyVocabulary`, `IDSSchema`,
+  `EntityConstraint`, `PropertyConstraint`. The Colab side rehydrates the
+  Python objects from `bundle_<model>.json` produced via
+  `dataclasses.asdict`. `CombinedVocabulary.from_dict` deliberately drops
+  `ifc_schema` (heavy, only needed during merging — not for prompt building or
+  grammar generation).
+- **`scripts/build_bundle.py` made IDS-optional.** New `--no-ids` flag, plus
+  graceful fallback when `IDS_FILE_PATH` is empty / missing — bundle ships
+  with `ids_schema = null` and `vocab.strict_properties = []`. The two
+  IDS-grounded settings collapse toward their baselines, but the rest of the
+  framework runs fine.
+- **Test sets now accept JSON.** `src.eval.runner.load_test_set` dispatches on
+  file extension; the API lifespan auto-resolves the test-set file in this
+  order: `data/test_set.csv` → `data/test_set.json` →
+  `data/extended_test_set.json` (first hit wins).
+- **`data/extended_test_set.json` rewritten for Barcelona.** All 28 gold
+  queries audited against the actual graph. 16 return real data, 2 correctly
+  return empty (no load-bearing walls / accessible ramps in the model), 10
+  reference entities absent from Barcelona (`IfcSpace`, `BOUNDS`, `SUPPORTS`,
+  `FireResistance`, `StructuralLoad`) — those gold queries are still valid
+  Cypher; they just produce empty gold ID sets on this particular IFC.
+- **Notebooks rewritten.** `notebooks/run_experiment_local.ipynb` (GPU,
+  all four settings) and `notebooks/run_experiment_cloud.ipynb` (CPU,
+  Settings 1–3) clone the repo over HTTPS, configure `API_BASE_URL` +
+  `API_BEARER_TOKEN`, and run the full loop via `ApiExperimentRunner`. Bolt
+  credentials are gone from both.
+- **`requirements-base.txt`** — added `httpx>=0.27` (used by both `ApiClient`
+  and FastAPI's `TestClient`).
+- **Tests added** (53 total now pass): `tests/test_bundle_roundtrip.py`
+  (7 cases) and `tests/test_client_runner.py` (6 cases via
+  `httpx.MockTransport` + a fake LLM engine — no torch/outlines needed).
+
+#### Files added
+- `src/client/__init__.py`, `src/client/api_client.py`, `src/client/runner.py`
+- `tests/test_bundle_roundtrip.py`, `tests/test_client_runner.py`
+
+#### Files modified
+- `src/constraints/ids_parser.py`, `src/constraints/vocabulary_merger.py` —
+  `from_dict` constructors.
+- `src/eval/runner.py` — `load_test_set` accepts JSON.
+- `src/api/main.py` — auto-resolve test-set path; clearer logging when no
+  test set is found.
+- `scripts/build_bundle.py` — IDS optional; new `--no-ids` flag.
+- `requirements-base.txt` — `httpx>=0.27`.
+- `notebooks/run_experiment_local.ipynb`,
+  `notebooks/run_experiment_cloud.ipynb` — rewritten for the API-driven flow.
+- `data/extended_test_set.json` — gold queries fixed against the Barcelona
+  graph schema.
+- `CLAUDE.md`, `README.md` — documentation refreshed.
+
+---
 
 ### 2026-01-29: Major Bug Fixes and Enhancements
 
