@@ -392,17 +392,21 @@ class BaseLLMEngine(ABC):
     
     def _validate_cypher(self, query: str) -> bool:
         """Validate a generated Cypher query against the schema."""
+        cached = getattr(self, "_regex_pattern", None)
+        if cached:
+            return validate_cypher_against_regex(query, cached)
+
         if self.vocabulary:
             regex = build_cypher_regex_from_vocabulary(self.vocabulary)
             return validate_cypher_against_regex(query, regex)
-        
+
         if self.schema:
             regex = build_cypher_regex(
                 self.schema.get_neo4j_labels(),
                 self.schema.properties,
             )
             return validate_cypher_against_regex(query, regex)
-        
+
         return True  # No schema to validate against
     
     def _validate_json_list(self, output: str) -> tuple[bool, Optional[List[str]]]:
@@ -590,6 +594,7 @@ class LocalLLMEngine(BaseLLMEngine):
         super().__init__(settings, schema, vocabulary, model_dump)
         self.generator = None
         self._regex_pattern = None
+        self._strict_generator = None  # cached Outlines Generator (FSM)
     
     def initialize(self) -> None:
         """Initialize the local model with Outlines."""
@@ -627,17 +632,28 @@ class LocalLLMEngine(BaseLLMEngine):
         else:
             logger.info("Using Transformers backend")
             self._backend = "transformers"
+            import torch
             hf_model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 device_map="auto",
+                torch_dtype=torch.float16,
             )
             hf_tokenizer = AutoTokenizer.from_pretrained(model_path)
             self.model = outlines.from_transformers(hf_model, hf_tokenizer)
-        
+
         self._regex_pattern = self._get_regex_pattern()
         if self._regex_pattern:
             logger.info("Built constraint regex from schema")
-        
+            try:
+                from outlines import Generator
+                from outlines.types import Regex
+                logger.info("Compiling Outlines FSM (one-time)…")
+                self._strict_generator = Generator(self.model, Regex(self._regex_pattern))
+                logger.info("Outlines FSM cached")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to pre-compile Outlines Generator: %s", exc)
+                self._strict_generator = None
+
         self._initialized = True
         logger.info("Local LLM engine initialized")
     
@@ -753,8 +769,10 @@ class LocalLLMEngine(BaseLLMEngine):
 
         if use_strict and self._regex_pattern:
             logger.debug("Using STRICT constrained generation")
-            generator = Generator(self.model, Regex(self._regex_pattern))
-            raw_output = generator(prompt, **gen_kwargs)
+            if self._strict_generator is None:
+                logger.info("Compiling Outlines FSM (lazy)…")
+                self._strict_generator = Generator(self.model, Regex(self._regex_pattern))
+            raw_output = self._strict_generator(prompt, **gen_kwargs)
             is_constrained = True
         else:
             logger.debug("Using unconstrained generation")
