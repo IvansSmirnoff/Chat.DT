@@ -490,6 +490,16 @@ class ApiExperimentRunner:
         valid_syntax = sum(1 for r in rows if r.get("is_valid_syntax"))
         errors = sum(1 for r in rows if r.get("error"))
 
+        # Non-trivial subset: gold returned at least one row. Excludes cases
+        # where empty gold + empty pred trivially scores EA=1.0.
+        nt_rows = [r for r in rows if int(r.get("num_gold_results", 0) or 0) > 0]
+        nt_n = len(nt_rows)
+
+        def nt_mean(key: str) -> float:
+            if nt_n == 0:
+                return 0.0
+            return sum(float(r.get(key, 0.0) or 0.0) for r in nt_rows) / nt_n
+
         by_difficulty: Dict[str, Dict[str, Any]] = {}
         for r in rows:
             diff = r.get("difficulty") or "unknown"
@@ -516,5 +526,10 @@ class ApiExperimentRunner:
             "f1_mean": mean("f1"),
             "syntax_valid_count": valid_syntax,
             "error_count": errors,
+            "non_trivial_count": nt_n,
+            "ea_mean_non_trivial": nt_mean("ea"),
+            "f1_mean_non_trivial": nt_mean("f1"),
+            "precision_mean_non_trivial": nt_mean("precision"),
+            "recall_mean_non_trivial": nt_mean("recall"),
             "metrics_by_difficulty": metrics_by_difficulty,
         }

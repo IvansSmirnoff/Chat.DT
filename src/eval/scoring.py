@@ -375,7 +375,18 @@ def _extract_global_id(value: Any, id_property: str = "GlobalId") -> Optional[st
             return value
         # Also accept it if explicitly named GlobalId in the query
         return value
-    
+
+    # Aggregation outputs (count/sum/min/max/avg) come back as ints/floats.
+    # Tokenize them in a distinct namespace so set-based EA still works for
+    # scalar-returning gold queries.
+    if isinstance(value, bool):
+        return f"bool:{int(value)}"
+    if isinstance(value, int):
+        return f"num:{value}"
+    if isinstance(value, float):
+        # Round to dampen float jitter from sums/avgs.
+        return f"num:{round(value, 6)}"
+
     return None
 
 
