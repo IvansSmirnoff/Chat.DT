@@ -40,8 +40,17 @@ NUMBER_LITERAL = r"-?[0-9]+(?:\.[0-9]+)?"
 BOOLEAN_LITERAL = r"(?:true|false|TRUE|FALSE)"
 NULL_LITERAL = r"(?:null|NULL)"
 
-# Cypher variable names (alphanumeric, starting with letter)
+# Cypher variable names (alphanumeric, starting with letter).
+# Used for *bindings* in MATCH node patterns — those ARE consumed by the
+# token, then immediately followed by `:` or `)`, so the FSM cannot self-loop.
 VARIABLE = r"[a-zA-Z_][a-zA-Z0-9_]*"
+
+# Bounded identifier for AS-alias names. Aliases bind a fresh name (not a
+# reference back into MATCH), so they need >1 char, but unbounded length is
+# an FSM self-loop trap: model emitted `door_countMATCHrelsrelsrels…`×200 as
+# a single alias token. 20-char cap closes the trap while keeping aliases
+# readable.
+ALIAS_NAME = r"[a-zA-Z_][a-zA-Z0-9_]{0,19}"
 
 # Short variable name for variable *references* (RETURN/WHERE/ORDER BY).
 # The open-ended VARIABLE pattern is an FSM self-loop trap for small models
@@ -253,8 +262,15 @@ def build_cypher_regex(
         if config.allow_aggregations:
             agg_item = f"(?:{AGG_FUNCTIONS}\\({WS}(?:\\*|{REF_VARIABLE}(?:\\.{property_alt})?){WS}\\))"
             return_item = f"(?:{return_item}|{agg_item})"
-        alias_pattern = f"(?:{WS_REQ}{_keyword('AS', ci)}{WS_REQ}{VARIABLE})?"
-        return_items = f"{return_item}{alias_pattern}(?:{WS},{WS}{return_item}{alias_pattern})*"
+        alias_pattern = f"(?:{WS_REQ}{_keyword('AS', ci)}{WS_REQ}{ALIAS_NAME})?"
+        # Cap the RETURN list at 8 items. Unbounded `*` let the model spam
+        # `n.Window_Board_Extension`×24 in q10, hitting Cypher's
+        # duplicate-column-name error. Realistic queries return <=8 columns.
+        max_extra_return_items = 7
+        return_items = (
+            f"{return_item}{alias_pattern}"
+            f"(?:{WS},{WS}{return_item}{alias_pattern}){{0,{max_extra_return_items}}}"
+        )
         return_clause = f"{WS_REQ}{_keyword('RETURN', ci)}{WS_REQ}{return_items}"
 
     # Build ORDER BY clause. References use REF_VARIABLE for the same reason.
