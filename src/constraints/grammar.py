@@ -59,9 +59,6 @@ ALIAS_NAME = r"[a-zA-Z_][a-zA-Z0-9_]{0,19}"
 # letter forces the model to reuse the variable bound in MATCH.
 REF_VARIABLE = r"[a-z]"
 
-# Backwards-compatible alias for callers that still import RETURN_VARIABLE.
-RETURN_VARIABLE = REF_VARIABLE
-
 # Comparison operators (basic + compound)
 COMPARISON_OP_BASIC = r"(?:=|<>|!=|<=|>=|<|>)"
 
@@ -312,190 +309,18 @@ def build_cypher_regex(
     return full_pattern
 
 
-def build_simple_cypher_regex(
-    entities: Set[str],
-    properties: Set[str]
-) -> str:
-    """
-    Build a simplified regex for basic MATCH-WHERE-RETURN queries.
-    
-    This is a more permissive pattern suitable for initial experiments
-    or when the full grammar is too restrictive.
-    
-    Args:
-        entities: Set of valid entity labels
-        properties: Set of valid property names
-        
-    Returns:
-        Simplified regex pattern
-    """
-    entity_alt = _build_alternation(entities)
-    property_alt = _build_alternation(properties)
-    
-    # Value pattern for simple queries
-    value_pattern = f"(?:{STRING_LITERAL}|{NUMBER_LITERAL}|{BOOLEAN_LITERAL})"
-    
-    # Simple pattern: MATCH (n:Entity) RETURN n
-    # or: MATCH (n:Entity) WHERE n.prop = 'value' RETURN n
-    pattern = (
-        f"MATCH{WS}\\({VARIABLE}:{entity_alt}\\)"
-        f"(?:{WS_REQ}WHERE{WS_REQ}{VARIABLE}\\.{property_alt}{WS}{COMPARISON_OP_BASIC}{WS}{value_pattern})?"
-        f"{WS_REQ}RETURN{WS_REQ}(?:\\*|{VARIABLE}(?:\\.{property_alt})?)"
-    )
-    
-    return pattern
-
-
-def build_relationship_cypher_regex(
-    entities: Set[str],
-    properties: Set[str],
-    relationships: Optional[Set[str]] = None,
-    max_conditions: int = 4
-) -> str:
-    """
-    Build a regex for queries with relationships.
-    
-    Supports patterns like:
-        MATCH (a:Entity)-[:REL]->(b:Entity) RETURN a
-        MATCH (a:Entity)-[:REL]->(b:Entity) WHERE a.prop = 'value' AND b.prop > 10 RETURN a
-    
-    Args:
-        entities: Set of valid entity labels
-        properties: Set of valid property names
-        relationships: Set of valid relationship types (optional)
-        max_conditions: Maximum number of WHERE conditions
-        
-    Returns:
-        Regex pattern supporting relationships
-    """
-    entity_alt = _build_alternation(entities)
-    property_alt = _build_alternation(properties)
-    
-    # Default relationships for BIM (aligned with ETL loader)
-    if relationships is None:
-        relationships = {"CONTAINS", "DECOMPOSES", "HAS_MATERIAL"}
-    
-    rel_alt = _build_alternation(relationships)
-    
-    # Build value pattern (string, number, boolean)
-    value_pattern = f"(?:{STRING_LITERAL}|{NUMBER_LITERAL}|{BOOLEAN_LITERAL})"
-    
-    # Build property access pattern: n.Property or toInteger(n.Property)
-    property_access = f"(?:{CONVERSION_FUNCTIONS}\\({WS}{VARIABLE}\\.{property_alt}{WS}\\)|{VARIABLE}\\.{property_alt})"
-    
-    # Build different condition types (same as in build_cypher_regex):
-    # 1. Basic comparison: n.Property = 'value' or n.Property > 100 or toInteger(n.Property) >= 20
-    basic_comparison = f"{property_access}{WS}{COMPARISON_OP_BASIC}{WS}{value_pattern}"
-    
-    # 2. String CONTAINS: n.Property CONTAINS 'value'
-    string_contains = f"{VARIABLE}\\.{property_alt}{WS_REQ}(?:CONTAINS|contains){WS_REQ}{STRING_LITERAL}"
-    
-    # 3. IS NULL / IS NOT NULL: n.Property IS NOT NULL
-    is_null_check = f"{VARIABLE}\\.{property_alt}{WS_REQ}(?:IS|is)(?:{WS_REQ}(?:NOT|not))?{WS_REQ}(?:NULL|null)"
-    
-    # 4. NOT with string contains: NOT n.Property CONTAINS 'value'
-    not_string_contains = f"(?:NOT|not){WS_REQ}{VARIABLE}\\.{property_alt}{WS_REQ}(?:CONTAINS|contains){WS_REQ}{STRING_LITERAL}"
-    
-    # Combined single condition (any of the above)
-    single_condition = f"(?:{not_string_contains}|{basic_comparison}|{string_contains}|{is_null_check})"
-    
-    # Build WHERE clause with multiple conditions (supports conditions on both variables)
-    additional_conditions = f"(?:{WS_REQ}(?:AND|OR|and|or){WS_REQ}{single_condition}){{0,{max_conditions - 1}}}"
-    where_clause = f"(?:{WS_REQ}(?:WHERE|where){WS_REQ}{single_condition}{additional_conditions})?"
-    
-    # Build relationship pattern
-    rel_pattern = f"(?:-\\[(?:{VARIABLE})?:{rel_alt}\\]->|-\\[:{rel_alt}\\]->|-->)"
-    
-    # Node pattern
-    node_pattern = f"\\({VARIABLE}:{entity_alt}\\)"
-    
-    # Full pattern with optional relationship and complex WHERE
-    pattern = (
-        f"(?:MATCH|match){WS}{node_pattern}"
-        f"(?:{rel_pattern}{node_pattern})?"
-        f"{where_clause}"
-        f"{WS_REQ}(?:RETURN|return){WS_REQ}(?:\\*|{VARIABLE}(?:\\.{property_alt})?(?:{WS},{WS}{VARIABLE}(?:\\.{property_alt})?)*)"
-    )
-    
-    return pattern
-
-
 # =============================================================================
 # Validation
 # =============================================================================
 
 def validate_cypher_against_regex(query: str, regex: str) -> bool:
-    """
-    Validate a Cypher query against a grammar regex.
-    
-    Args:
-        query: Cypher query string
-        regex: Grammar regex pattern
-        
-    Returns:
-        True if the query matches the grammar
-    """
+    """Validate a Cypher query against a grammar regex (full-match)."""
     try:
-        # Add anchors for full match
         pattern = f"^{regex}$"
         return bool(re.match(pattern, query.strip(), re.IGNORECASE))
     except re.error as e:
         logger.error(f"Invalid regex pattern: {e}")
         return False
-
-
-def extract_entities_from_query(query: str, valid_entities: Set[str]) -> Set[str]:
-    """
-    Extract entity labels used in a Cypher query.
-    
-    Args:
-        query: Cypher query string
-        valid_entities: Set of valid entity names for matching
-        
-    Returns:
-        Set of entity labels found in the query
-    """
-    found = set()
-    
-    # Match patterns like (n:IfcWall) or (:IfcWall)
-    label_pattern = r"\(\s*\w*\s*:\s*(\w+)\s*\)"
-    
-    for match in re.finditer(label_pattern, query):
-        label = match.group(1)
-        # Check case-insensitive match against valid entities
-        for valid in valid_entities:
-            if label.lower() == valid.lower():
-                found.add(valid)
-                break
-    
-    return found
-
-
-def extract_properties_from_query(query: str, valid_properties: Set[str]) -> Set[str]:
-    """
-    Extract property names used in a Cypher query.
-    
-    Args:
-        query: Cypher query string
-        valid_properties: Set of valid property names for matching
-        
-    Returns:
-        Set of property names found in the query
-    """
-    found = set()
-    
-    # Match patterns like n.PropertyName or node.property_name
-    prop_pattern = r"\b\w+\.(\w+)\b"
-    
-    for match in re.finditer(prop_pattern, query):
-        prop = match.group(1)
-        # Check case-insensitive match against valid properties
-        for valid in valid_properties:
-            if prop.lower() == valid.lower():
-                found.add(valid)
-                break
-    
-    return found
 
 
 # =============================================================================
@@ -540,25 +365,6 @@ def build_cypher_regex_from_vocabulary(
     )
     
     return build_cypher_regex(entities, properties, config)
-
-
-def build_relationship_cypher_regex_from_vocabulary(
-    vocabulary: "CombinedVocabulary",
-) -> str:
-    """
-    Build a relationship-aware Cypher regex from a CombinedVocabulary.
-    
-    Args:
-        vocabulary: CombinedVocabulary from the vocabulary_merger
-        
-    Returns:
-        Regex pattern supporting relationships
-    """
-    entities = vocabulary.get_entity_names()
-    properties = vocabulary.get_all_property_names()
-    relationships = vocabulary.all_relations.copy()
-    
-    return build_relationship_cypher_regex(entities, properties, relationships)
 
 
 # =============================================================================

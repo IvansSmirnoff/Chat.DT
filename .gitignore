@@ -144,3 +144,6 @@ notebooks
 tasks
 
 *.ipynb
+
+# External comparison material (ASK-BIM artifacts, ~38 MB).
+coglioni_sardi/

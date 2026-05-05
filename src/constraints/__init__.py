@@ -9,7 +9,6 @@ from .ids_parser import IDSParser, IDSSchema
 from .grammar import (
     build_cypher_regex,
     build_cypher_regex_from_vocabulary,
-    build_relationship_cypher_regex_from_vocabulary,
     CypherGrammar,
 )
 from .schema_scanner import IFCSchemaScanner, IFCModelSchema, scan_ifc_schema
@@ -55,6 +54,5 @@ __all__ = [
     # Grammar
     "build_cypher_regex",
     "build_cypher_regex_from_vocabulary",
-    "build_relationship_cypher_regex_from_vocabulary",
     "CypherGrammar",
 ]

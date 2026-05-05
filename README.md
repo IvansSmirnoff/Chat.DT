@@ -493,9 +493,14 @@ The grammar generator builds **regex patterns** that constrain LLM output to val
 
 **Regex Functions:**
 - `build_cypher_regex()`: Full-featured regex with all Cypher clauses
-- `build_simple_cypher_regex()`: Simplified pattern for basic queries
-- `build_relationship_cypher_regex()`: Supports relationship patterns
-- `build_cypher_regex_from_vocabulary()`: Uses CombinedVocabulary
+  (MATCH, optional relationship, WHERE, RETURN with aggregations and
+  multi-item, ORDER BY, LIMIT). Variable references are bound to a
+  single lowercase letter (`REF_VARIABLE`); AS-alias names are capped
+  at 20 chars; the RETURN list is capped at 8 items. These caps close
+  FSM self-loop traps that otherwise let small models emit unbounded
+  garbage tokens.
+- `build_cypher_regex_from_vocabulary()`: Builds the regex from a
+  `CombinedVocabulary` (IFC schema scan + IDS).
 
 ### Phase 4: Context Building (System Prompts)
 
@@ -1361,6 +1366,85 @@ lives there (one tree, no duplication).
 ---
 
 ## Appendix B: Development Changelog
+
+### 2026-05-05: Grammar relaxation + FSM-trap caps + dead-code purge
+
+`CYPHER_STRICT` regex was structurally unable to express any
+"how many / total / average / min / max / tallest / smallest / largest"
+gold pattern. Three blockers, three patches, one anti-loop guard.
+
+#### Diagnosis
+
+- `force_return_node=True` was the prior default → `RETURN` was hard-forced
+  to a bare variable. `count(...)`, `n.Property`, multi-item RETURN, and
+  `AS alias` never reached the FSM. `allow_aggregations` was dead code
+  (only consulted in the `else` branch the forced path never took).
+- `allow_order_by` and `allow_limit` defaulted to `False` → killed
+  `ORDER BY ... DESC LIMIT 1` patterns gold uses for tallest/smallest.
+- After flipping those defaults, the regex still had open-ended
+  `VARIABLE = [a-zA-Z_][a-zA-Z0-9_]*` patterns in WHERE/RETURN/ORDER BY.
+  These create FSM self-loops that small models never exit: q21 produced
+  `EXISTSMatcherMatchedPath…`×120, q0 produced `door_countMATCHrelsrels…`
+  ×~200 packed into a single AS-alias token.
+
+#### Patches in `src/constraints/grammar.py`
+
+1. Default flips: `force_return_node=False`, `allow_order_by=True`,
+   `allow_limit=True`.
+2. **`REF_VARIABLE = [a-z]`** for variable *references* in WHERE, RETURN,
+   ORDER BY items, and aggregation-inner vars. Bindings (node `(n:Label)`
+   in MATCH) keep the full `VARIABLE` because they are immediately
+   followed by `:` or `)` — no self-loop possible.
+3. **`ALIAS_NAME = [a-zA-Z_][a-zA-Z0-9_]{0,19}`** for AS-alias names.
+   Aliases bind a fresh name and need >1 char, but the 20-char cap kills
+   the q0-style alias-token explosion.
+4. **RETURN list capped at 8 items** (`{0,7}` extra). Stops the
+   q10/q22-style duplicate-column spam where the model spammed the same
+   property name 24 times into a single RETURN clause.
+
+#### Dead code removed
+
+`build_simple_cypher_regex`, `build_relationship_cypher_regex`,
+`build_relationship_cypher_regex_from_vocabulary`,
+`extract_entities_from_query`, `extract_properties_from_query`, and the
+`RETURN_VARIABLE` backwards-compat alias — none had external callers.
+Their inner regexes still used unbounded `VARIABLE` patterns, so keeping
+them would re-open the FSM trap for any caller that fell back to them.
+
+#### Test fixture
+
+`tests/test_grammar_regex.py` now exercises the new shapes
+(aggregations, property RETURN, multi-item RETURN, ORDER BY DESC LIMIT 1,
+AS alias) and asserts the two trap cases reject (21-char alias,
+9-item RETURN list).
+
+#### Empirical effect
+
+| metric | pre-relaxation | new_grammar | caps |
+|---|---|---|---|
+| EA | ~0.001 | 0.464 | 0.357 |
+| **EA_nt** | **0.001** | **0.176** | **0.176** |
+| **F1_nt** | **0** | **0.176** | **0.176** |
+| syntax_valid | 0/28 | 24/28 | 24/28 |
+| full hits (EA=1, F1=1) | 0 | q4, q11, q19 | q4, q11, q19 |
+
+The headline EA dropped from 0.464 → 0.357 between the new_grammar and
+caps runs because the old number was inflated by accidental
+cardinality matches that the caps shrank away. F1_nt is flat at 0.176
+across both relaxed runs — no real content was lost. **F1_nt and SCR
+are the honest headline metrics; raw EA is moved to the appendix.**
+
+#### Anti-loop guard
+
+All three classes of open-ended `VARIABLE` are now bounded: references
+(REF_VARIABLE, single letter), AS aliases (ALIAS_NAME, ≤20 chars),
+RETURN-list cardinality (≤8). Further regex tightening would lock out
+valid gold shapes for diminishing returns. The remaining failures
+(wrong properties, wrong relationships, unbound RETURN variables,
+post-aggregation scope errors) are content, not shape — they must be
+fixed in `context_builder.py`, not in the grammar.
+
+---
 
 ### 2026-04-29: API-driven Colab client + bundle round-trip + JSON test sets
 
