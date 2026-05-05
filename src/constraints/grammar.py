@@ -43,10 +43,15 @@ NULL_LITERAL = r"(?:null|NULL)"
 # Cypher variable names (alphanumeric, starting with letter)
 VARIABLE = r"[a-zA-Z_][a-zA-Z0-9_]*"
 
-# Short variable name for RETURN clause — prevents small models from
-# generating unbounded garbage after RETURN (the open-ended VARIABLE
-# pattern creates an FSM self-loop that weak models never exit).
-RETURN_VARIABLE = r"[a-z]"
+# Short variable name for variable *references* (RETURN/WHERE/ORDER BY).
+# The open-ended VARIABLE pattern is an FSM self-loop trap for small models
+# (q21 produced `EXISTSMatcherMatchedPath…` ×120 because the regex permitted
+# any identifier in WHERE). Binding all references to a single lowercase
+# letter forces the model to reuse the variable bound in MATCH.
+REF_VARIABLE = r"[a-z]"
+
+# Backwards-compatible alias for callers that still import RETURN_VARIABLE.
+RETURN_VARIABLE = REF_VARIABLE
 
 # Comparison operators (basic + compound)
 COMPARISON_OP_BASIC = r"(?:=|<>|!=|<=|>=|<|>)"
@@ -92,10 +97,10 @@ class CypherGrammar:
     relationships: Set[str] = field(default_factory=lambda: {"CONTAINS", "DECOMPOSES", "HAS_MATERIAL"})
     max_where_clauses: int = 4  # Increased to support complex queries like test_set
     allow_aggregations: bool = True
-    allow_order_by: bool = False  # Disabled by default to avoid incomplete queries
-    allow_limit: bool = False     # Disabled by default to avoid incomplete queries  
+    allow_order_by: bool = True   # Needed for "tallest/smallest/largest" gold patterns
+    allow_limit: bool = True      # Needed for ORDER BY ... DESC LIMIT 1 pattern
     allow_relationships: bool = True
-    force_return_node: bool = True  # Force returning node for GlobalId extraction
+    force_return_node: bool = False  # Was True: blocked count/sum/avg + RETURN n.Prop
     case_insensitive_keywords: bool = True
     
     def __post_init__(self):
@@ -199,22 +204,24 @@ def build_cypher_regex(
     # Build value pattern (string, number, boolean)
     value_pattern = f"(?:{STRING_LITERAL}|{NUMBER_LITERAL}|{BOOLEAN_LITERAL})"
     
+    # All variable references in WHERE / RETURN / ORDER BY are bound to a
+    # single lowercase letter (REF_VARIABLE) — this prevents the FSM
+    # self-loop on the open-ended VARIABLE pattern (q21 token explosion).
     # Build property access pattern: n.Property or toInteger(n.Property)
-    # This supports conversion functions like toInteger(n.FireRating)
-    property_access = f"(?:{CONVERSION_FUNCTIONS}\\({WS}{VARIABLE}\\.{property_alt}{WS}\\)|{VARIABLE}\\.{property_alt})"
-    
+    property_access = f"(?:{CONVERSION_FUNCTIONS}\\({WS}{REF_VARIABLE}\\.{property_alt}{WS}\\)|{REF_VARIABLE}\\.{property_alt})"
+
     # Build different condition types:
     # 1. Basic comparison: n.Property = 'value' or n.Property > 100 or toInteger(n.Property) >= 20
     basic_comparison = f"{property_access}{WS}{COMPARISON_OP_BASIC}{WS}{value_pattern}"
-    
+
     # 2. String CONTAINS: n.Property CONTAINS 'value' or m.Name CONTAINS 'Concrete'
-    string_contains = f"{VARIABLE}\\.{property_alt}{WS_REQ}{STRING_OP}{WS_REQ}{STRING_LITERAL}"
-    
+    string_contains = f"{REF_VARIABLE}\\.{property_alt}{WS_REQ}{STRING_OP}{WS_REQ}{STRING_LITERAL}"
+
     # 3. IS NULL / IS NOT NULL: n.Property IS NOT NULL
-    is_null_check = f"{VARIABLE}\\.{property_alt}{WS_REQ}{_keyword('IS', ci)}(?:{WS_REQ}{_keyword('NOT', ci)})?{WS_REQ}{_keyword('NULL', ci)}"
-    
+    is_null_check = f"{REF_VARIABLE}\\.{property_alt}{WS_REQ}{_keyword('IS', ci)}(?:{WS_REQ}{_keyword('NOT', ci)})?{WS_REQ}{_keyword('NULL', ci)}"
+
     # 4. NOT with string contains: NOT n.Property CONTAINS 'value' or NOT m.Name CONTAINS 'Concrete'
-    not_string_contains = f"{_keyword('NOT', ci)}{WS_REQ}{VARIABLE}\\.{property_alt}{WS_REQ}{STRING_OP}{WS_REQ}{STRING_LITERAL}"
+    not_string_contains = f"{_keyword('NOT', ci)}{WS_REQ}{REF_VARIABLE}\\.{property_alt}{WS_REQ}{STRING_OP}{WS_REQ}{STRING_LITERAL}"
     
     # Combined single condition (any of the above)
     single_condition = f"(?:{not_string_contains}|{basic_comparison}|{string_contains}|{is_null_check})"
@@ -235,23 +242,26 @@ def build_cypher_regex(
             f"(?:{WS_REQ}{_keyword('WHERE', ci)}{WS_REQ}{single_condition})?"
         )
     
-    # Build RETURN clause - FORCE returning the node variable for GlobalId extraction
+    # Build RETURN clause.
+    # All variable *references* use REF_VARIABLE (single lowercase letter) to
+    # avoid the FSM self-loop on the open-ended VARIABLE pattern. AS aliases
+    # *bind* a new name, so they can use the full VARIABLE pattern safely.
     if config.force_return_node:
-        return_clause = f"{WS_REQ}{_keyword('RETURN', ci)}{WS_REQ}{RETURN_VARIABLE}"
+        return_clause = f"{WS_REQ}{_keyword('RETURN', ci)}{WS_REQ}{REF_VARIABLE}"
     else:
-        return_item = f"(?:{VARIABLE}(?:\\.{property_alt})?)"
+        return_item = f"(?:{REF_VARIABLE}(?:\\.{property_alt})?)"
         if config.allow_aggregations:
-            agg_item = f"(?:{AGG_FUNCTIONS}\\({WS}(?:\\*|{VARIABLE}(?:\\.{property_alt})?){WS}\\))"
+            agg_item = f"(?:{AGG_FUNCTIONS}\\({WS}(?:\\*|{REF_VARIABLE}(?:\\.{property_alt})?){WS}\\))"
             return_item = f"(?:{return_item}|{agg_item})"
         alias_pattern = f"(?:{WS_REQ}{_keyword('AS', ci)}{WS_REQ}{VARIABLE})?"
         return_items = f"{return_item}{alias_pattern}(?:{WS},{WS}{return_item}{alias_pattern})*"
         return_clause = f"{WS_REQ}{_keyword('RETURN', ci)}{WS_REQ}{return_items}"
-    
-    # Build ORDER BY clause (optional) - DISABLED by default
+
+    # Build ORDER BY clause. References use REF_VARIABLE for the same reason.
     order_clause = ""
     if config.allow_order_by:
         order_direction = f"(?:{WS_REQ}(?:{_keyword('ASC', ci)}|{_keyword('DESC', ci)}))?"
-        order_item = f"{VARIABLE}(?:\\.{property_alt})?{order_direction}"
+        order_item = f"{REF_VARIABLE}(?:\\.{property_alt})?{order_direction}"
         order_clause = f"(?:{WS_REQ}{_keyword('ORDER', ci)}{WS_REQ}{_keyword('BY', ci)}{WS_REQ}{order_item})?"
     
     # Build LIMIT clause (optional) - DISABLED by default
