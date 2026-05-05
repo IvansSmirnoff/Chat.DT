@@ -18,6 +18,8 @@ from typing import Any, Dict, Set, Tuple
 import ifcopenshell
 import ifcopenshell.util.element
 
+from src.utils.property_names import canonical_property_name
+
 logger = logging.getLogger(__name__)
 
 # =============================================================================
@@ -231,7 +233,7 @@ class IFCSchemaScanner:
                             continue
                         
                         # Sanitize property name for Neo4j compatibility
-                        clean_name = self._sanitize_property_name(prop_name)
+                        clean_name = canonical_property_name(prop_name)
                         
                         # Categorize as quantity or regular property
                         if pset_name.startswith("Qto_"):
@@ -268,7 +270,7 @@ class IFCSchemaScanner:
                         if prop_name in self.SKIP_PROPERTIES:
                             continue
                         
-                        clean_name = self._sanitize_property_name(prop_name)
+                        clean_name = canonical_property_name(prop_name)
                         
                         if pset_name.startswith("Qto_"):
                             schema.all_quantity_properties.add(clean_name)
@@ -328,27 +330,6 @@ class IFCSchemaScanner:
                 schema.entities[element_type].relations.add("FILLS")
             schema.all_relations.add("FILLS")
     
-    def _sanitize_property_name(self, name: str) -> str:
-        """
-        Sanitize property name for Neo4j compatibility.
-        
-        Replaces spaces and special characters with underscores.
-        """
-        # Replace common problematic characters
-        sanitized = name.replace(" ", "_").replace(".", "_").replace("-", "_")
-        
-        # Remove any remaining non-alphanumeric characters (except underscore)
-        sanitized = "".join(c if c.isalnum() or c == "_" else "_" for c in sanitized)
-        
-        # Remove consecutive underscores
-        while "__" in sanitized:
-            sanitized = sanitized.replace("__", "_")
-        
-        # Remove leading/trailing underscores
-        sanitized = sanitized.strip("_")
-        
-        return sanitized
-
 
 # =============================================================================
 # Convenience Functions

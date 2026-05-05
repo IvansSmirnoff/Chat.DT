@@ -163,7 +163,7 @@
   },
   {
     "question": "Which walls in the building are fire-resistant?",
-    "gold_cypher": "MATCH (w:IfcWall) WHERE w.FireResistance > 0 RETURN w",
+    "gold_cypher": "MATCH (w:IfcWall) WHERE w.Family_and_Type CONTAINS '-hr' RETURN w",
     "category": "property_filter",
     "difficulty": "Medium"
   }

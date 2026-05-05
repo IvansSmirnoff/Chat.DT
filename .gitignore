@@ -140,3 +140,7 @@ CLAUDE.md
 GEMINI.md
 
 notebooks/*
+notebooks
+tasks
+
+*.ipynb

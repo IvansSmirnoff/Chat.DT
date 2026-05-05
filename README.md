@@ -199,9 +199,9 @@ IFC File (model.ifc)
         │
         ▼
 ┌───────────────────────────────────────┐
-│    sanitize_property_name()           │
+│    canonical_property_name()          │
 │    Clean property names for Neo4j     │
-│    compatibility                      │
+│    compatibility (shared with scanner)│
 └───────────────────────────────────────┘
         │
         ▼
@@ -247,7 +247,7 @@ IFC File (model.ifc)
 
 **Key Functions:**
 - `flatten_psets()`: Extracts all PropertySets (Pset_*) and QuantitySets (Qto_*) into flat dictionary
-- `sanitize_property_name()`: Handles special characters and Neo4j reserved names
+- `sanitize_property_name()`: Loader-side wrapper around `src/utils/property_names.assign_unique_property_name`. Single canonical rule (replace ` `/`.`/`-` with `_`, drop other non-alnum, collapse runs of `_`, strip leading/trailing `_`, prefix Neo4j reserved names with `ifc_`) is shared with `schema_scanner.py` so graph property keys match the bundle vocabulary exactly. Loader adds collision-suffixing (`_1`, `_2`, …) on top.
 - `safe_value()`: Converts IFC values to Neo4j-compatible types
 - `_label_chain()`: Walks the IFC schema declaration chain via `ifcopenshell_wrapper.schema_by_name(...).declaration_by_name(...).supertype()`. Result is cached per leaf class. Applied at node creation so a single `MATCH (:IfcWall)` finds both `IfcWall` and `IfcWallStandardCase` instances.
 - `_extract_voids()` / `_extract_fills()`: Materialise the `wall→opening→door|window` chain so questions like "windows on walls > 3m tall" are answerable from graph structure rather than property heuristics.

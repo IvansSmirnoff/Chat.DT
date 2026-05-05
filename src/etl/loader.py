@@ -21,6 +21,7 @@ from ifcopenshell import ifcopenshell_wrapper
 from neo4j import GraphDatabase, Transaction
 
 from src.config import get_settings, Settings
+from src.utils.property_names import assign_unique_property_name
 
 # Configure logging
 logging.basicConfig(
@@ -39,45 +40,14 @@ BATCH_SIZE = 1000
 # Properties to skip during flattening (internal IFC properties)
 SKIP_PROPERTIES = {"id", "type", "GlobalId", "OwnerHistory"}
 
-# Reserved Neo4j property names that need prefixing
-RESERVED_NAMES = {"id", "labels", "type", "start", "end"}
-
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
 
 def sanitize_property_name(name: str, existing_keys: Set[str]) -> str:
-    """
-    Sanitize a property name for Neo4j compatibility.
-    
-    - Replaces spaces and special characters with underscores
-    - Handles collisions by adding numeric suffix
-    - Prefixes reserved Neo4j names
-    
-    Args:
-        name: Original property name from IFC
-        existing_keys: Set of already used property names
-        
-    Returns:
-        Sanitized property name safe for Neo4j
-    """
-    # Replace problematic characters
-    sanitized = name.replace(" ", "_").replace(".", "_").replace("-", "_")
-    sanitized = "".join(c if c.isalnum() or c == "_" else "_" for c in sanitized)
-    
-    # Handle reserved names
-    if sanitized.lower() in RESERVED_NAMES:
-        sanitized = f"ifc_{sanitized}"
-    
-    # Handle collisions with numeric suffix
-    original = sanitized
-    counter = 1
-    while sanitized in existing_keys:
-        sanitized = f"{original}_{counter}"
-        counter += 1
-    
-    return sanitized
+    """Backwards-compatible wrapper around the shared canonicaliser."""
+    return assign_unique_property_name(name, existing_keys)
 
 
 def safe_value(value: Any) -> Any:
