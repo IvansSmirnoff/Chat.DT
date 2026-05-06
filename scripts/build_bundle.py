@@ -34,6 +34,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import get_settings
 from src.constraints.ids_parser import parse_ids_file
+from src.constraints.value_sampler import (
+    generate_few_shot_examples,
+    sample_value_enumerations,
+)
 from src.constraints.vocabulary_merger import build_combined_vocabulary
 from scripts.create_model_dump import export_from_ifc
 
@@ -54,25 +58,27 @@ class _BundleEncoder(json.JSONEncoder):
         return super().default(o)
 
 
-def collect_graph_stats(uri: str, user: str, password: str) -> Dict[str, Any]:
-    """Query Neo4j for node/relationship counts per label and type.
+def _open_driver(uri: str, user: str, password: str):
+    """Open and verify a Neo4j driver, raising on failure.
 
-    Returns empty dict on connection failure so bundle build still succeeds
-    when Neo4j isn't running (useful for dev iteration).
+    The bundle now depends on live graph data (value enumerations +
+    few-shot examples) for prompt context, so an empty fallback would
+    silently weaken the model. We hard-fail instead.
     """
     try:
         from neo4j import GraphDatabase
-    except ImportError:
-        logger.warning("neo4j driver not installed, skipping graph_stats")
-        return {}
+    except ImportError as exc:
+        raise RuntimeError(
+            "neo4j driver is required to build a bundle: pip install neo4j"
+        ) from exc
 
-    try:
-        driver = GraphDatabase.driver(uri, auth=(user, password))
-        driver.verify_connectivity()
-    except Exception as exc:
-        logger.warning(f"Neo4j unreachable ({exc}), skipping graph_stats")
-        return {}
+    driver = GraphDatabase.driver(uri, auth=(user, password))
+    driver.verify_connectivity()
+    return driver
 
+
+def collect_graph_stats(driver) -> Dict[str, Any]:
+    """Query Neo4j for node/relationship counts per label and type."""
     stats: Dict[str, Any] = {"labels": {}, "relationships": {}, "totals": {}}
     with driver.session() as session:
         label_result = session.run("CALL db.labels() YIELD label RETURN label")
@@ -92,7 +98,6 @@ def collect_graph_stats(uri: str, user: str, password: str) -> Dict[str, Any]:
             "MATCH ()-[r]->() RETURN count(r) AS c"
         ).single()["c"]
 
-    driver.close()
     return stats
 
 
@@ -123,11 +128,24 @@ def build_bundle(
         logger.info(f"Exporting model dump from {ifc_path}")
         model_dump = export_from_ifc(ifc_path=ifc_path)
 
-    logger.info(f"Collecting graph stats from {neo4j_uri}")
-    graph_stats = collect_graph_stats(neo4j_uri, neo4j_user, neo4j_password)
+    logger.info(f"Connecting to Neo4j at {neo4j_uri}")
+    driver = _open_driver(neo4j_uri, neo4j_user, neo4j_password)
+    try:
+        logger.info("Collecting graph stats")
+        graph_stats = collect_graph_stats(driver)
+
+        logger.info("Sampling value enumerations from graph")
+        value_enumerations = sample_value_enumerations(driver, vocab)
+
+        logger.info("Generating graph-sourced few-shot examples")
+        few_shot_examples = generate_few_shot_examples(
+            driver, vocab, enumerations=value_enumerations,
+        )
+    finally:
+        driver.close()
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source": {
             "ifc_file": ifc_path.name,
             "ids_file": ids_path.name if ids_path is not None else None,
@@ -136,6 +154,8 @@ def build_bundle(
         "ids_schema": ids_schema,
         "model_dump": model_dump,
         "graph_stats": graph_stats,
+        "value_enumerations": value_enumerations,
+        "few_shot_examples": few_shot_examples,
         "neo4j": {
             "uri_hint": neo4j_uri,
         },
@@ -221,7 +241,9 @@ def main():
         f"Contents: vocabulary ({len(bundle['combined_vocabulary'].entities)} entities), "
         f"IDS ({ids_count} entities), "
         f"model_dump ({len(bundle['model_dump'])} elements), "
-        f"graph_stats ({len(bundle['graph_stats'].get('labels', {}))} labels)"
+        f"graph_stats ({len(bundle['graph_stats'].get('labels', {}))} labels), "
+        f"value_enumerations ({len(bundle['value_enumerations'])} pairs), "
+        f"few_shot_examples ({len(bundle['few_shot_examples'])})"
     )
 
 

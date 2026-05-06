@@ -1477,12 +1477,11 @@ authenticated FastAPI service.
   framework runs fine.
 - **Test sets now accept JSON.** `src.eval.runner.load_test_set` dispatches on
   file extension; the API lifespan auto-resolves the test-set file in this
-  order: `data/test_set.csv` → `data/test_set.json` →
-  `data/extended_test_set.json` (first hit wins).
-- **`data/extended_test_set.json` rewritten for Barcelona.** All 28 gold
-  queries audited against the actual graph. 16 return real data, 2 correctly
-  return empty (no load-bearing walls / accessible ramps in the model), 10
-  reference entities absent from Barcelona (`IfcSpace`, `BOUNDS`, `SUPPORTS`,
+  order: `data/test_set.csv` → `data/test_set.json` (first hit wins).
+- **`data/test_set.json` rewritten for Barcelona.** All 28 gold queries
+  audited against the actual graph. 16 return real data, 2 correctly return
+  empty (no load-bearing walls / accessible ramps in the model), 10 reference
+  entities absent from Barcelona (`IfcSpace`, `BOUNDS`, `SUPPORTS`,
   `FireResistance`, `StructuralLoad`) — those gold queries are still valid
   Cypher; they just produce empty gold ID sets on this particular IFC.
 - **Notebooks rewritten.** `notebooks/run_experiment_local.ipynb` (GPU,
@@ -1510,7 +1509,7 @@ authenticated FastAPI service.
 - `requirements-base.txt` — `httpx>=0.27`.
 - `notebooks/run_experiment_local.ipynb`,
   `notebooks/run_experiment_cloud.ipynb` — rewritten for the API-driven flow.
-- `data/extended_test_set.json` — gold queries fixed against the Barcelona
+- `data/test_set.json` — gold queries fixed against the Barcelona
   graph schema.
 - `CLAUDE.md`, `README.md` — documentation refreshed.
 

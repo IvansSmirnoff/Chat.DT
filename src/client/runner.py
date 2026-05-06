@@ -129,6 +129,8 @@ class ApiExperimentRunner:
         self.model_context: Optional[str] = None
         self.engine: Optional[BaseLLMEngine] = None
         self.test_cases: List[Dict[str, Any]] = []
+        self.value_enumerations: Dict[str, List[str]] = {}
+        self.few_shot_examples: List[Dict[str, str]] = []
 
     # ------------------------------------------------------------------
     # Setup
@@ -153,7 +155,7 @@ class ApiExperimentRunner:
         if not self.test_cases:
             raise RuntimeError(
                 "API returned an empty test set. Confirm the server has a "
-                "data/test_set.csv or data/extended_test_set.json file mounted "
+                "data/test_set.csv or data/test_set.json file mounted "
                 "and that gold queries pre-executed at startup (see api lifespan logs)."
             )
         logger.info("Fetched %d test cases from API", len(self.test_cases))
@@ -194,11 +196,18 @@ class ApiExperimentRunner:
         self.model_context = (
             json.dumps(self.model_dump, indent=2) if self.model_dump else None
         )
+
+        self.value_enumerations = bundle.get("value_enumerations") or {}
+        self.few_shot_examples = bundle.get("few_shot_examples") or []
+
         logger.info(
-            "Bundle loaded: %d entities, %d properties, model_dump=%d elements",
+            "Bundle loaded: %d entities, %d properties, model_dump=%d elements, "
+            "value_enumerations=%d, few_shot_examples=%d",
             len(self.vocabulary.entities),
             len(self.vocabulary.all_properties),
             len(self.model_dump or []),
+            len(self.value_enumerations),
+            len(self.few_shot_examples),
         )
 
     def _build_engine(self) -> None:
@@ -217,6 +226,8 @@ class ApiExperimentRunner:
             schema=self.ids_schema,
             vocabulary=self.vocabulary,
             model_dump=self.model_dump,
+            few_shot_examples=self.few_shot_examples or None,
+            value_enumerations=self.value_enumerations or None,
         )
         # Initialize eagerly so failures (missing API key, model download) surface
         # before the first test question.

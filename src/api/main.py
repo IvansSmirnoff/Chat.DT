@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_TEST_SET_CANDIDATES = (
     Path("/app/data/test_set.csv"),
     Path("/app/data/test_set.json"),
-    Path("/app/data/extended_test_set.json"),
 )
 
 

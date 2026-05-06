@@ -22,6 +22,10 @@ from src.llm_engine import (
     GeminiLLMEngine,
 )
 from src.constraints.ids_parser import IDSParser, IDSSchema
+from src.constraints.value_sampler import (
+    generate_few_shot_examples,
+    sample_value_enumerations,
+)
 from src.constraints.vocabulary_merger import CombinedVocabulary, build_combined_vocabulary
 from src.eval.scoring import EvaluationResult, OutputType
 from src.eval.neo4j_exec import execute_gold_queries
@@ -327,6 +331,10 @@ class ExperimentRunner:
         # Model context for Direct QA
         self.model_context: Optional[str] = None
         self.model_dump: Optional[Dict[str, Any]] = None
+
+        # Graph-sourced prompt context (sampled in setup()).
+        self.value_enumerations: Dict[str, List[str]] = {}
+        self.few_shot_examples: List[Dict[str, str]] = []
     
     def setup(self) -> None:
         """Initialize database connection and load schemas."""
@@ -387,6 +395,32 @@ class ExperimentRunner:
         elif self.schema:
             self.valid_labels = self.schema.get_neo4j_labels()
             self.valid_properties = self.schema.properties
+
+        # Graph-sourced prompt context: sample categorical values + few-shots
+        # straight from the live driver so the local CLI matches the bundle
+        # path used in Colab.
+        if self.vocabulary:
+            try:
+                self.value_enumerations = sample_value_enumerations(
+                    self.driver, self.vocabulary
+                )
+                self.few_shot_examples = generate_few_shot_examples(
+                    self.driver,
+                    self.vocabulary,
+                    enumerations=self.value_enumerations,
+                )
+                logger.info(
+                    f"Graph-sourced prompt context: "
+                    f"{len(self.value_enumerations)} enumerations, "
+                    f"{len(self.few_shot_examples)} few-shot examples"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"Failed to sample graph-sourced prompt context: {exc}. "
+                    "Continuing with empty enumerations / few-shots."
+                )
+                self.value_enumerations = {}
+                self.few_shot_examples = []
         
         # Add common properties
         self.valid_properties.update({
@@ -454,6 +488,8 @@ class ExperimentRunner:
                 vocabulary=self.vocabulary,
                 model_dump=self.model_dump,
                 use_context_cache=True,
+                few_shot_examples=self.few_shot_examples or None,
+                value_enumerations=self.value_enumerations or None,
             )
             engine.initialize()
             return engine
@@ -463,6 +499,8 @@ class ExperimentRunner:
             schema=self.schema,
             vocabulary=self.vocabulary,
             model_dump=self.model_dump,
+            few_shot_examples=self.few_shot_examples or None,
+            value_enumerations=self.value_enumerations or None,
         )
 
         # For strict mode, prefer local engine if available

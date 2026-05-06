@@ -122,31 +122,13 @@ CRITICAL RULES:
 9. DO NOT use ORDER BY or LIMIT
 10. Numeric values should NOT have quotes (e.g., WHERE n.Width > 200)
 
-EXAMPLES:
-Q: List all walls
-A: MATCH (n:IfcWall) RETURN n
-
-Q: List all external walls
-A: MATCH (n:IfcWall) WHERE n.IsExternal = true RETURN n
-
-Q: List all doors that have a fire rating defined
-A: MATCH (n:IfcDoor) WHERE n.FireRating IS NOT NULL RETURN n
-
-Q: List all columns made of concrete
-A: MATCH (n:IfcColumn)-[:HAS_MATERIAL]->(m:IfcMaterial) WHERE m.Name CONTAINS 'Concrete' RETURN n
-
-Q: List all spaces on a specific floor
-A: MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(n:IfcSpace) WHERE s.Name CONTAINS '02' RETURN n
-
-Q: List spaces larger than 12 square meters on a floor
-A: MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(n:IfcSpace) WHERE s.Name CONTAINS '02' AND n.GrossFloorArea > 12 RETURN n
-
-Q: List load-bearing columns not made of concrete
-A: MATCH (n:IfcColumn)-[:HAS_MATERIAL]->(m:IfcMaterial) WHERE n.LoadBearing = true AND NOT m.Name CONTAINS 'Concrete' RETURN n
-
 OUTPUT FORMAT:
 Return ONLY the Cypher query. No explanations, no markdown, no code blocks.
 """
+# NOTE: This fallback template intentionally has no inline few-shots. When a
+# CombinedVocabulary is loaded (the standard path), prompts are built by
+# ``ContextBuilder``, which sources examples and known values from the live
+# graph — see ``src/constraints/value_sampler.py``.
 
 CYPHER_SOFT_CONSTRAINT_SUFFIX = """
 
@@ -235,27 +217,39 @@ class BaseLLMEngine(ABC):
         schema: Optional[IDSSchema] = None,
         vocabulary: Optional[CombinedVocabulary] = None,
         model_dump: Optional[Dict[str, Any]] = None,
+        few_shot_examples: Optional[List[Dict[str, str]]] = None,
+        value_enumerations: Optional[Dict[str, List[str]]] = None,
     ):
         """
         Initialize the LLM engine.
-        
+
         Args:
             settings: Application settings
             schema: IDS schema for constraints (legacy mode)
             vocabulary: Combined IFC + IDS vocabulary (preferred mode)
             model_dump: Pre-loaded model data for Direct QA mode
+            few_shot_examples: Graph-sourced Q/A pairs for the Cypher prompt
+                (see ``src.constraints.value_sampler``).
+            value_enumerations: Graph-sampled categorical property values
+                rendered as the prompt's ``Known Values`` block.
         """
         self.settings = settings or get_settings()
         self.schema = schema
         self.vocabulary = vocabulary
         self.model_dump = model_dump
+        self.few_shot_examples = few_shot_examples
+        self.value_enumerations = value_enumerations
         self.model = None
         self._initialized = False
         self._context_builder: Optional[ContextBuilder] = None
-        
+
         # Initialize context builder if vocabulary provided
         if self.vocabulary:
-            self._context_builder = ContextBuilder(self.vocabulary)
+            self._context_builder = ContextBuilder(
+                self.vocabulary,
+                few_shot_examples=self.few_shot_examples,
+                value_enumerations=self.value_enumerations,
+            )
     
     @abstractmethod
     def initialize(self) -> None:
@@ -590,8 +584,14 @@ class LocalLLMEngine(BaseLLMEngine):
         schema: Optional[IDSSchema] = None,
         vocabulary: Optional[CombinedVocabulary] = None,
         model_dump: Optional[Dict[str, Any]] = None,
+        few_shot_examples: Optional[List[Dict[str, str]]] = None,
+        value_enumerations: Optional[Dict[str, List[str]]] = None,
     ):
-        super().__init__(settings, schema, vocabulary, model_dump)
+        super().__init__(
+            settings, schema, vocabulary, model_dump,
+            few_shot_examples=few_shot_examples,
+            value_enumerations=value_enumerations,
+        )
         self.generator = None
         self._regex_pattern = None
         self._strict_generator = None  # cached Outlines Generator (FSM)
@@ -844,8 +844,14 @@ class GeminiLLMEngine(BaseLLMEngine):
         model_dump: Optional[Dict[str, Any]] = None,
         use_context_cache: bool = False,
         model_dump_json: Optional[str] = None,
+        few_shot_examples: Optional[List[Dict[str, str]]] = None,
+        value_enumerations: Optional[Dict[str, List[str]]] = None,
     ):
-        super().__init__(settings, schema, vocabulary, model_dump)
+        super().__init__(
+            settings, schema, vocabulary, model_dump,
+            few_shot_examples=few_shot_examples,
+            value_enumerations=value_enumerations,
+        )
         self.client = None
         self.use_context_cache = use_context_cache
         self._model_dump_json = model_dump_json
@@ -1302,10 +1308,16 @@ class OpenAILLMEngine(BaseLLMEngine):
         schema: Optional[IDSSchema] = None,
         vocabulary: Optional[CombinedVocabulary] = None,
         model_dump: Optional[Dict[str, Any]] = None,
+        few_shot_examples: Optional[List[Dict[str, str]]] = None,
+        value_enumerations: Optional[Dict[str, List[str]]] = None,
     ):
-        super().__init__(settings, schema, vocabulary, model_dump)
+        super().__init__(
+            settings, schema, vocabulary, model_dump,
+            few_shot_examples=few_shot_examples,
+            value_enumerations=value_enumerations,
+        )
         self.client = None
-    
+
     def initialize(self) -> None:
         """Initialize the OpenAI client."""
         if self._initialized:
@@ -1447,40 +1459,47 @@ def create_llm_engine(
     schema: Optional[IDSSchema] = None,
     vocabulary: Optional[CombinedVocabulary] = None,
     model_dump: Optional[Dict[str, Any]] = None,
+    few_shot_examples: Optional[List[Dict[str, str]]] = None,
+    value_enumerations: Optional[Dict[str, List[str]]] = None,
 ) -> BaseLLMEngine:
     """
     Factory function to create the appropriate LLM engine.
-    
+
     Args:
         provider: LLM provider (local, gemini, openai). Uses config if not specified.
         settings: Application settings
         schema: IDS schema for constraints (legacy mode)
         vocabulary: Combined IFC + IDS vocabulary (preferred mode)
         model_dump: Pre-loaded model data for Direct QA mode
-        
+        few_shot_examples: Graph-sourced Q/A pairs for the Cypher prompt.
+        value_enumerations: Graph-sampled categorical property values
+            rendered as the prompt's ``Known Values`` block.
+
     Returns:
         Configured LLM engine instance
     """
     settings = settings or get_settings()
     provider = provider or settings.llm_provider
-    
+
     logger.info(f"Creating LLM engine for provider: {provider.value}")
-    
+
     engine_map = {
         LLMProvider.LOCAL: LocalLLMEngine,
         LLMProvider.GEMINI: GeminiLLMEngine,
         LLMProvider.OPENAI: OpenAILLMEngine,
     }
-    
+
     engine_class = engine_map.get(provider)
     if engine_class is None:
         raise ValueError(f"Unknown LLM provider: {provider}")
-    
+
     return engine_class(
         settings=settings,
         schema=schema,
         vocabulary=vocabulary,
         model_dump=model_dump,
+        few_shot_examples=few_shot_examples,
+        value_enumerations=value_enumerations,
     )
 
 

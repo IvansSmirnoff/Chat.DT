@@ -24,29 +24,13 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Few-Shot Examples
 # =============================================================================
+#
+# Few-shot examples are no longer hardcoded — they are sampled from the actual
+# graph at bundle-build time (see ``src/constraints/value_sampler.py``). When
+# no examples are supplied, the prompt simply omits the ``## Examples`` block
+# rather than risk seeding the model with values that don't exist in the data.
 
-DEFAULT_FEW_SHOT_EXAMPLES: List[Dict[str, str]] = [
-    {
-        "question": "Find all walls with fire rating EI60",
-        "cypher": "MATCH (n:IfcWall) WHERE n.FireRating = 'EI60' RETURN n",
-    },
-    {
-        "question": "What are the names of all external doors?",
-        "cypher": "MATCH (n:IfcDoor) WHERE n.IsExternal = true RETURN n.Name",
-    },
-    {
-        "question": "Count the windows on each floor",
-        "cypher": "MATCH (n:IfcWindow) RETURN n.Level, count(n) AS window_count",
-    },
-    {
-        "question": "List all load-bearing walls",
-        "cypher": "MATCH (n:IfcWall) WHERE n.LoadBearing = true RETURN n",
-    },
-    {
-        "question": "What is the height of wall W-001?",
-        "cypher": "MATCH (n:IfcWall) WHERE n.Name = 'W-001' RETURN n.Height",
-    },
-]
+DEFAULT_FEW_SHOT_EXAMPLES: List[Dict[str, str]] = []
 
 
 # =============================================================================
@@ -58,7 +42,7 @@ SYSTEM_PROMPT_TEMPLATE = """You are a Neo4j Cypher query generator for Building 
 Your task is to convert natural language questions into valid Cypher queries that can be executed against a Neo4j database containing IFC building data.
 
 {schema_section}
-
+{known_values_section}
 ## Query Guidelines
 
 1. **MATCH clause**: Use `MATCH (n:EntityLabel)` where EntityLabel is one of the available entities
@@ -140,17 +124,26 @@ class ContextBuilder:
     def __init__(
         self,
         vocabulary: CombinedVocabulary,
-        few_shot_examples: Optional[List[Dict[str, str]]] = None
+        few_shot_examples: Optional[List[Dict[str, str]]] = None,
+        value_enumerations: Optional[Dict[str, List[str]]] = None,
     ):
         """
         Initialize the context builder.
-        
+
         Args:
             vocabulary: Combined vocabulary from vocabulary_merger
-            few_shot_examples: Optional custom examples (defaults to DEFAULT_FEW_SHOT_EXAMPLES)
+            few_shot_examples: Optional Q/A pairs sampled from the graph
+                (see ``value_sampler.generate_few_shot_examples``). If
+                omitted, no ``## Examples`` block is emitted — better than
+                seeding the model with values that don't exist in the data.
+            value_enumerations: Optional ``{"Label.prop": [v1, v2, ...]}``
+                mapping (see ``value_sampler.sample_value_enumerations``).
+                Rendered as a ``## Known Values`` block so the model picks
+                from the literal labels the graph holds.
         """
         self.vocabulary = vocabulary
         self.few_shot_examples = few_shot_examples or DEFAULT_FEW_SHOT_EXAMPLES
+        self.value_enumerations = value_enumerations or {}
     
     def build_context(
         self,
@@ -172,23 +165,27 @@ class ContextBuilder:
         # Build schema section
         schema_string = get_system_schema_string(self.vocabulary)
         schema_section = f"## Available Schema\n\n{schema_string}"
-        
+
         # Build constraint rules
         if constraint_mode == "strict":
             constraint_rules = CONSTRAINT_RULES_STRICT
         else:
             constraint_rules = CONSTRAINT_RULES_SOFT
-        
+
+        # Known values block (graph-sampled categorical enums).
+        known_values_section = self._build_known_values_section()
+
         # Build examples section
         examples_section = ""
         if include_examples:
             examples_section = self._build_examples_section(max_examples)
-        
+
         # Assemble full prompt
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             schema_section=schema_section,
+            known_values_section=known_values_section,
             constraint_rules=constraint_rules,
-            examples_section=examples_section
+            examples_section=examples_section,
         )
         
         return PromptContext(
@@ -202,17 +199,41 @@ class ContextBuilder:
     def _build_examples_section(self, max_examples: int) -> str:
         """Build the few-shot examples section."""
         examples = self.few_shot_examples[:max_examples]
-        
+
         if not examples:
             return ""
-        
+
         lines = ["## Examples", ""]
-        
+
         for i, ex in enumerate(examples, 1):
             lines.append(f"**Q{i}**: {ex['question']}")
             lines.append(f"**A{i}**: {ex['cypher']}")
             lines.append("")
-        
+
+        return "\n".join(lines)
+
+    def _build_known_values_section(self) -> str:
+        """Render graph-sampled categorical enumerations as a prompt block.
+
+        Returns an empty string when no enumerations are available so the
+        prompt template collapses cleanly to ``schema_section`` + rules.
+        """
+        if not self.value_enumerations:
+            return ""
+
+        lines = [
+            "",
+            "## Known Values",
+            "",
+            "These literal values exist in the graph. When a question implies one of "
+            "these properties, pick the matching value verbatim — do not invent labels.",
+            "",
+        ]
+        for key in sorted(self.value_enumerations.keys()):
+            values = self.value_enumerations[key]
+            rendered = ", ".join(f"'{v}'" for v in values)
+            lines.append(f"- `{key}`: [{rendered}]")
+        lines.append("")
         return "\n".join(lines)
     
     def build_user_prompt(self, question: str) -> str:
