@@ -44,6 +44,12 @@ from scripts.create_model_dump import export_from_ifc
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+# Neo4j driver emits notification messages at WARNING (deprecated procedure
+# output, dead property keys we already filter, etc.). They are not errors
+# and clutter the bundle-build log; downgrade to ERROR so only real driver
+# failures surface.
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
+
 
 class _BundleEncoder(json.JSONEncoder):
     """JSON encoder that handles sets and dataclasses used in the bundle."""

@@ -147,8 +147,9 @@ def test_sample_excludes_globalid_and_other_identity_props():
     enums = sample_value_enumerations(driver, vocab)
 
     assert enums == {}
-    # Sampler must not even probe the excluded property.
-    assert driver.executed == []
+    # Sampler must not probe the excluded property — only the schema
+    # introspection probe is allowed (and tolerated when it returns nothing).
+    assert all("WHERE n.`GlobalId`" not in q for q in driver.executed)
 
 
 def test_sample_drops_numeric_only_values():
@@ -196,7 +197,9 @@ def test_sample_skips_strict_properties():
     enums = sample_value_enumerations(driver, vocab)
 
     assert enums == {}
-    assert driver.executed == []  # STRICT path short-circuits before any query
+    # STRICT path short-circuits before any DISTINCT probe — the only
+    # query allowed is the schema-introspection probe.
+    assert all("RETURN DISTINCT" not in q for q in driver.executed)
 
 
 def test_sample_handles_empty_graph_gracefully():

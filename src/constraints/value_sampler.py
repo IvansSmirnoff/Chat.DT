@@ -94,6 +94,13 @@ def sample_value_enumerations(
     pairs_examined = 0
 
     with driver.session() as session:
+        # Pre-fetch the real (label, property) pairs the graph actually
+        # carries so we never probe a key the loader didn't materialise.
+        # Without this, the vocabulary (which is a superset of the graph,
+        # since it includes every IFC pset key) triggers a Neo4j
+        # ``UnknownPropertyKeyWarning`` notification per dead probe.
+        known_keys = _fetch_known_property_keys(session)
+
         for entity_name in sorted(vocab.entities.keys()):
             if not entity_name:
                 continue
@@ -113,6 +120,11 @@ def sample_value_enumerations(
                 # information the prompt already exposes.
                 prop_vocab = entity.properties[prop_name]
                 if prop_vocab.property_type == PropertyType.STRICT:
+                    continue
+
+                # Skip probes for properties the loader never wrote on
+                # this label — they would emit dead-key warnings.
+                if known_keys and prop_name not in known_keys.get(entity_name, set()):
                     continue
 
                 entity_probes += 1
@@ -160,6 +172,34 @@ _PRIORITY_PROPERTIES = (
     "Material",
     "Category",
 )
+
+
+def _fetch_known_property_keys(session) -> Dict[str, Set[str]]:
+    """Map each Neo4j label to the property keys the graph actually carries.
+
+    Uses the ``db.schema.nodeTypeProperties`` procedure (Neo4j 4.x+). Returns
+    an empty dict if the procedure is unavailable, in which case the sampler
+    falls back to probing every vocabulary pair (and tolerates the resulting
+    notifications).
+    """
+    keys: Dict[str, Set[str]] = {}
+    try:
+        rows = session.run(
+            "CALL db.schema.nodeTypeProperties() "
+            "YIELD nodeLabels, propertyName "
+            "RETURN nodeLabels, propertyName"
+        ).data()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("db.schema.nodeTypeProperties unavailable: %s", exc)
+        return {}
+
+    for row in rows:
+        prop = row.get("propertyName")
+        if not prop:
+            continue
+        for label in row.get("nodeLabels") or []:
+            keys.setdefault(label, set()).add(prop)
+    return keys
 
 
 def _ordered_properties(names) -> List[str]:
