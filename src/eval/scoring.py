@@ -140,21 +140,24 @@ class EvaluationResult:
 # SVR: JSON validation (pure)
 # =============================================================================
 
-def calculate_svr_json(output: str) -> Tuple[float, bool, Optional[str], Optional[List[str]]]:
+def calculate_svr_json(output: str) -> Tuple[float, bool, Optional[str], Optional[List[Any]]]:
     """
     Calculate Syntactic Validity Rate for JSON array output (Direct QA).
-    
-    Validates that the output is a valid JSON array of strings.
-    
+
+    Validates that the output is a valid JSON array. Elements are returned
+    in their parsed form (str/int/float/bool) so downstream scoring can match
+    a numeric-only gold (``RETURN count(n)``) against a numeric JSON answer
+    without losing the type.
+
     Args:
         output: Raw LLM output to validate
-        
+
     Returns:
         Tuple of (svr_score, is_valid, error_message, parsed_list)
     """
     try:
         output = output.strip()
-        
+
         # Handle markdown code blocks
         if "```json" in output:
             match = re.search(r"```json\s*(.*?)\s*```", output, re.DOTALL)
@@ -164,26 +167,58 @@ def calculate_svr_json(output: str) -> Tuple[float, bool, Optional[str], Optiona
             match = re.search(r"```\s*(.*?)\s*```", output, re.DOTALL)
             if match:
                 output = match.group(1)
-        
+
         # Find JSON array in output
         start_idx = output.find("[")
         end_idx = output.rfind("]")
         if start_idx != -1 and end_idx != -1:
             output = output[start_idx:end_idx + 1]
-        
+
         parsed = json.loads(output)
-        
+
         if not isinstance(parsed, list):
             return 0.0, False, "Output is not a JSON array", None
-        
-        # Ensure all elements are strings
-        result = [str(item) for item in parsed]
-        return 1.0, True, None, result
-        
+
+        return 1.0, True, None, list(parsed)
+
     except json.JSONDecodeError as e:
         return 0.0, False, f"JSON parse error: {e}", None
     except Exception as e:
         return 0.0, False, f"Validation error: {e}", None
+
+
+_NUMERIC_STRING_RE = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$")
+
+
+def _coerce_direct_qa_token(value: Any) -> str:
+    """Map a JSON-parsed Direct-QA element to the same token namespace used
+    when tokenizing Cypher gold results.
+
+    Numeric / bool elements become ``num:X`` / ``bool:X`` so a scalar gold
+    (``RETURN count(n)``) matches a Direct-QA answer like ``[5]`` or ``["5"]``.
+    Strings that aren't numeric pass through unchanged so GlobalId answers
+    keep working.
+    """
+    if isinstance(value, bool):
+        return f"bool:{int(value)}"
+    if isinstance(value, int):
+        return f"num:{value}"
+    if isinstance(value, float):
+        return f"num:{round(value, 6)}"
+    if isinstance(value, str):
+        candidate = value.strip()
+        if _NUMERIC_STRING_RE.match(candidate):
+            try:
+                if (
+                    "." in candidate
+                    or "e" in candidate.lower()
+                ):
+                    return f"num:{round(float(candidate), 6)}"
+                return f"num:{int(candidate)}"
+            except (ValueError, OverflowError):
+                return value
+        return value
+    return str(value)
 
 
 # =============================================================================
@@ -224,15 +259,21 @@ def calculate_scr_cypher(
 ) -> Tuple[float, Set[str], Set[str]]:
     """
     Calculate Semantic Compliance Rate for Cypher queries.
-    
+
     Args:
         query: Cypher query to analyze
         valid_labels: Set of valid entity labels
         valid_properties: Set of valid property names
-        
+
     Returns:
         Tuple of (scr_score, invalid_labels, invalid_properties)
     """
+    # Empty/whitespace predicted output extracts zero labels + zero properties.
+    # Without this guard the function returns 1.0 (vacuous compliance) and the
+    # batch summary's scr_mean inflates on runs where the model emits nothing.
+    if not query or not query.strip():
+        return 0.0, set(), set()
+
     query_labels = extract_labels_from_cypher(query)
     query_properties = extract_properties_from_cypher(query)
     
@@ -297,26 +338,49 @@ def calculate_scr(
 # EA: ID-based scoring (pure)
 # =============================================================================
 
-def _extract_global_id(value: Any, id_property: str = "GlobalId") -> Optional[str]:
-    """
-    Extract GlobalId from various Neo4j result types.
-    
-    Handles:
-    - Neo4j Node objects (from neo4j driver)
-    - Dict-like objects
-    - Direct string values (if they look like GlobalIds)
-    - Nested structures
-    
-    Args:
-        value: A value from a Neo4j record
-        id_property: The property name to look for
-        
-    Returns:
-        The GlobalId string, or None if not found
+# Separators chosen so they cannot appear inside scalar tokens or IFC GlobalIds.
+# RECORD_SEP joins the cells of a single Neo4j record into one composite token,
+# preserving column order so group-by results like ``RETURN s.Name, count(d)``
+# do not collide when the model returns the same names + counts mis-paired.
+# LIST_SEP joins the (sorted) elements of a ``collect()``-style cell.
+RECORD_SEP = "\x1e"
+LIST_SEP = "\x1f"
+
+
+def _scalar_token(value: Any) -> Optional[str]:
+    """Tokenize aggregation-style scalars (count/sum/min/max/avg, bools)
+    into a distinct namespace so set-based EA still works for scalar gold.
+
+    Returns ``None`` for non-scalar values so callers can dispatch further.
     """
     if value is None:
         return None
-    
+    # bool is a subclass of int — check it first.
+    if isinstance(value, bool):
+        return f"bool:{int(value)}"
+    if isinstance(value, int):
+        return f"num:{value}"
+    if isinstance(value, float):
+        # Round to dampen float jitter from sums/avgs.
+        return f"num:{round(value, 6)}"
+    return None
+
+
+def _extract_global_id(value: Any, id_property: str = "GlobalId") -> Optional[str]:
+    """
+    Tokenize a single cell of a Neo4j record into a comparable string.
+
+    Handles, in order:
+    - Neo4j Node / dict-like objects → look up ``id_property``.
+    - Lists / tuples (e.g. from ``collect()``) → sorted, LIST_SEP-joined
+      bag of cell tokens (order-insensitive, like the SQL semantics).
+    - Direct string values → passthrough.
+    - Numeric / boolean scalars → ``num:``/``bool:`` namespace via
+      :func:`_scalar_token`.
+    """
+    if value is None:
+        return None
+
     # Handle Neo4j Node objects (have _properties or items() or get())
     # neo4j Node objects support dict-like access
     if hasattr(value, '_properties'):
@@ -328,7 +392,7 @@ def _extract_global_id(value: Any, id_property: str = "GlobalId") -> Optional[st
             if k.lower() == 'globalid' or k.lower() == 'global_id':
                 return str(v)
         return None
-    
+
     # Handle neo4j Node that supports item access via .get() but not _properties
     # This covers nodes returned directly from session.run()
     if hasattr(value, 'keys') and callable(getattr(value, 'keys', None)):
@@ -342,10 +406,19 @@ def _extract_global_id(value: Any, id_property: str = "GlobalId") -> Optional[st
                     return str(value[key])
         except (TypeError, KeyError):
             pass
-    
-    # Handle dict-like objects (from node.get or similar)
-    if hasattr(value, 'get') and callable(value.get):
-        result = value.get(id_property)
+
+    # Handle dict-like objects (from node.get or similar). Strings also expose
+    # .get via attribute lookup on some platforms — exclude them explicitly so
+    # this branch only catches actual mappings.
+    if (
+        not isinstance(value, (str, bytes, list, tuple))
+        and hasattr(value, 'get')
+        and callable(value.get)
+    ):
+        try:
+            result = value.get(id_property)
+        except TypeError:
+            result = None
         if result is not None:
             return str(result)
         # Try case-insensitive lookup via items()
@@ -357,7 +430,7 @@ def _extract_global_id(value: Any, id_property: str = "GlobalId") -> Optional[st
             except (TypeError, AttributeError):
                 pass
         return None
-    
+
     # Handle dict directly
     if isinstance(value, dict):
         if id_property in value:
@@ -366,28 +439,73 @@ def _extract_global_id(value: Any, id_property: str = "GlobalId") -> Optional[st
             if k.lower() == id_property.lower():
                 return str(v)
         return None
-    
+
+    # collect() / list-valued cells. Tokenize each element, drop misses,
+    # sort to make the bag order-insensitive, and join with LIST_SEP.
+    if isinstance(value, (list, tuple)):
+        parts = [
+            tok for tok in (_extract_global_id(v, id_property) for v in value)
+            if tok
+        ]
+        if not parts:
+            return None
+        return LIST_SEP.join(sorted(parts))
+
     # Handle direct string values that look like GlobalIds
     # IFC GlobalIds are 22 characters with specific charset
     if isinstance(value, str) and value:
         # Check if it looks like an IFC GlobalId (22 chars, alphanumeric + special)
         if len(value) == 22 and all(c.isalnum() or c in '_$' for c in value):
             return value
-        # Also accept it if explicitly named GlobalId in the query
+        # Coerce numeric strings to the same ``num:`` namespace used by the
+        # Direct-QA scorer. Without this, a Cypher gold like ``RETURN d.FireRating``
+        # that returns the string ``"0"`` doesn't match a Direct-QA answer of
+        # ``[0]`` / ``["0"]`` which the coercer turns into ``num:0``.
+        candidate = value.strip()
+        if _NUMERIC_STRING_RE.match(candidate):
+            try:
+                if "." in candidate or "e" in candidate.lower():
+                    return f"num:{round(float(candidate), 6)}"
+                return f"num:{int(candidate)}"
+            except (ValueError, OverflowError):
+                pass
         return value
 
-    # Aggregation outputs (count/sum/min/max/avg) come back as ints/floats.
-    # Tokenize them in a distinct namespace so set-based EA still works for
-    # scalar-returning gold queries.
-    if isinstance(value, bool):
-        return f"bool:{int(value)}"
-    if isinstance(value, int):
-        return f"num:{value}"
-    if isinstance(value, float):
-        # Round to dampen float jitter from sums/avgs.
-        return f"num:{round(value, 6)}"
+    scalar = _scalar_token(value)
+    if scalar is not None:
+        return scalar
 
     return None
+
+
+def tokenize_record(record_values: Any, id_property: str = "GlobalId") -> Optional[str]:
+    """Hash a whole Neo4j record into one composite token.
+
+    Cells are tokenized via :func:`_extract_global_id` and joined with
+    ``RECORD_SEP`` in column order. Single-cell records collapse to the cell's
+    own token (preserves the legacy ``Set[str]`` of GlobalIds behaviour).
+    Returns ``None`` if every cell tokenizes to ``None`` (whole-row drop).
+
+    Accepts either an iterable of values (e.g. ``record.values()``) or anything
+    with a ``.values()`` method (the neo4j Record itself).
+    """
+    if hasattr(record_values, "values") and callable(record_values.values):
+        try:
+            values_iter = list(record_values.values())
+        except TypeError:
+            values_iter = list(record_values)
+    else:
+        values_iter = list(record_values)
+
+    cells = [_extract_global_id(v, id_property) for v in values_iter]
+    if all(c is None for c in cells):
+        return None
+    # Single-cell case is the common Cypher pattern (RETURN n / RETURN n.GlobalId
+    # / RETURN count(n)) — collapse to the cell token to stay 1:1 with the
+    # pre-refactor result-set contents.
+    if len(cells) == 1:
+        return cells[0]
+    return RECORD_SEP.join("" if c is None else c for c in cells)
 
 
 def calculate_ea_from_ids(
@@ -435,11 +553,11 @@ def calculate_ea_direct(
         Tuple of (ea_score, generated_ids, error_message)
     """
     svr, is_valid, error, parsed_list = calculate_svr_json(raw_output)
-    
+
     if not is_valid or parsed_list is None:
         return 0.0, set(), f"Could not parse output: {error}"
-    
-    generated_ids = set(parsed_list)
+
+    generated_ids = {_coerce_direct_qa_token(item) for item in parsed_list}
     ea = calculate_ea_from_ids(generated_ids, gold_ids)
     
     logger.debug(

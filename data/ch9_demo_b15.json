@@ -1,0 +1,32 @@
+[
+  {
+    "question": "How many rooms in the building are classified as offices?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'UFFICI' RETURN count(s)",
+    "category": "basic_query",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "Where are the meeting rooms, and on which floor is each one?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'SALA RIUNIONI' RETURN s.Numero, s.Nome, s.Livello",
+    "category": "property_filter",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "How many offices are there on each floor?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'UFFICI' RETURN s.Livello, count(s) AS n ORDER BY n DESC",
+    "category": "reasoning",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "Which offices have no window?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'UFFICI' AND NOT (s)-[:BOUNDED_BY]->(:IfcWindow) RETURN s.Numero, s.Livello",
+    "category": "relationship",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "How many rooms are served by a fire-rated door?",
+    "gold_cypher": "MATCH (s:IfcSpace)-[:BOUNDED_BY]->(d:IfcDoor) WHERE d.PBSa_DESCRIZIONE = 'Porta, Portafinestra REI/EI' RETURN count(DISTINCT s)",
+    "category": "relationship",
+    "difficulty": "Hard"
+  }
+]

@@ -1,0 +1,44 @@
+#,Question,Ground_Truth (condensed),Matches_Our_Model,Reason
+1,Thickness of external wall insulation?,42 mm,NO,"Material-layer thickness dropped by ETL; material node keeps only Name. Wall.Width is total thickness, not insulation layer."
+2,Info about external-wall insulation?,"Not explicit; 'Insulated Panel', 42 mm",PARTIAL,Material name 'Insulation - Insulated Panel' present in graph; 42 mm layer thickness absent.
+3,How many X-ray rooms?,1 (room 2A12),PARTIAL,2A12=X-RAY exists. But name 'X-RAY'=6 nodes (3 deduped); OmniClass Scanning/Imaging=12 (6 deduped). Count of 1 not reproducible from labels.
+4,Ceiling height treatment room 2A12?,2.80 m,YES,space 2A12 Unbounded_Height = 2.8 m.
+5,List of all room types?,"29 types, 269 spaces",PARTIAL,29 OmniClass types match exactly. Space count off: 531 distinct Numbers / 795 nodes vs 269 (merge duplication + -M mirrors).
+6,Width of main entrance door?,1.8 m,PARTIAL,"1.83 m doors exist (5). No door named/flagged 'main entrance' -> cannot identify which door; value present, selection not."
+7,How many rooms in the clinic?,269,PARTIAL,"Distinct space Numbers=531, nodes=795. Merge created exact-dups + '-M' mirror rooms; 269 not reachable without bespoke dedup."
+8,Total area of sterilization rooms?,"25.4 sqm (2C12 DIPC CLEAN, 2C10 DIPC DECON)",YES,2C12=14.37 + 2C10=11.03 = 25.4 sqm exact (excluding -M duplicates).
+9,Estimated capacities of waiting areas?,Not in model; estimated 0.9-1.5 sqm/person,NO,No occupancy/capacity property. GT itself derives from external assumption.
+10,Total storage space + breakdown by type?,"~450 sqm, 34 storage areas",PARTIAL,"Storage spaces + Area present; type breakdown via name. GT itself says 'not directly available, estimated'; dup inflates totals."
+11,Ratio clinical : non-clinical space?,~0.22,NO,No clinical/non-clinical classification flag. GT estimated via heuristic exclusion.
+12,Average room height interaction stations?,2.8 m,YES,Interaction-station spaces present; Unbounded_Height = 2.8 m.
+13,Distance 1E12 -> nearest emergency exit + path?,Not in model; ~20-22 m est.,NO,"No geometry, no path/route network, fire-exit flag is placeholder junk (IsFireExit='IsFireExit')."
+14,Distance 1E23 -> nearest emergency exit + path?,Not in model; ~6-9 m est.,NO,"Same: no geometry, no routing, no usable fire-exit flag."
+15,Where is the server room + designation?,"Computer Room, room 2D04A, 2nd floor",PARTIAL,No 'server' name; 'COMPUTER ROOM' exists and storey is queryable. Requires reinterpretation server->computer room.
+16,Any reinforced areas for heavy equipment?,None clearly identifiable,NO,Not modeled as a property; GT also finds none. Nothing to query.
+17,Flooring type in sterilization room?,Not available in BIM,NO,Covering Finish/Material fields are placeholder junk; space->covering link not materialised.
+18,Wall finishing material treatment room 1D34?,Plasterboard,YES,1D34 -[BOUNDED_BY]-> wall -[HAS_MATERIAL]-> 'Plasterboard' (uses new BOUNDED_BY edge).
+19,Ceiling system in office areas?,ACT 600x600 mm grid,PARTIAL,Covering 'Compound Ceiling: ACT 600x600mm Grid' present. Scoping to office areas weak (no space->covering edge).
+20,Specialty flooring sqm for Labs + breakdown?,"~106 sqm, 4 labs",PARTIAL,Lab spaces + Area present (sum queryable). Covering material junk; 'specialty flooring' type not in model. GT estimated.
+21,STC rating between treatment rooms?,Not in model; typical 38-40 dB,NO,No STC property. GT falls back to external typical values.
+22,Are interior walls load bearing?,No,YES,"wall.LoadBearing present (interior walls=False, IsExternal=False)."
+23,Windows single or double glazed?,Not explicit; double (19 mm inset),PARTIAL,Window_Inset property present (can infer like GT). Glazing not explicit; glazing/config fields junk.
+24,Estimated office space area (sqm)?,"~675 sqm, 38 office-function spaces",PARTIAL,Office spaces + Area + Function present; sum queryable but duplication inflates. GT estimated.
+25,How many toilet rooms on second floor?,8,YES,Restroom-category spaces on 2nd floor = 16 raw -> 8 deduped. Matches after removing merge duplicates.
+26,Floor-to-floor height 1st->2nd?,4.57 m,YES,storey.Elevation: 4.57 - 0.0 = 4.57 m.
+27,Dimensions of window GUID 0otfaO0qPDAhynjJ6DmgH8?,"H 1.735 m, W 1.0 m",YES,"Window node: Width=1.0, Height=1.735 exact."
+28,Which rooms are connected to 1B07?,Only 1BC2 (corridor),PARTIAL,Door-connectivity (BOUNDED_BY+HAS_OPENING+FILLS) returns 1BC2 plus 4 extras -> over-returns. 1BC2 found; query needs tightening.
+29,Which rooms are adjacent to 1B07?,"1B09, 1BC2, 1B05, 1B04",PARTIAL,"Shared-bounding-wall query returns all 4 GT rooms + 4 extras (1AC1,1B01,1B03,1B11). Superset; data present, over-returns."
+30,Size of tech office on second floor?,2D18 = 84.8 sqm,YES,space 2D18 'TECH. OFFICE' Area = 84.8 sqm exact.
+31,How many windows in the building?,58,YES,count(IfcWindow) = 58. Windows not duplicated by merge.
+32,How many doors in the building?,254,YES,count(IfcDoor) = 254.
+33,Where are scanning equipments located?,6 Scanning/Imaging rooms,PARTIAL,"OmniClass 'Scanning/Imaging Room' = 12 raw -> 6 deduped, matches GT's 6 rooms. Equipment itself (furniture) not located; GT located rooms."
+34,Expected lifespan of roofing material?,"Not specified; EPDM, 25-30 yr",PARTIAL,"Roof material 'Roofing - EPDM Membrane' present in graph. Lifespan = external knowledge, not in model."
+35,Total gross floor area?,~4574 sqm (est.),NO,GSA_BIM_Area sum corrupted by duplication + roof spaces (raw 11154). 4574 not reproducible cleanly.
+36,Total usable floor area (UFA)?,2981.73 sqm,NO,No explicit UFA property; areas dup-corrupted. Exact 2981.73 comes from a source not in our graph.
+37,Total gross floor area (GFA)?,~5077 sqm (est.),NO,No GFA property; aggregates unreliable due to merge dup. GT itself estimated (and inconsistent with Q35).
+38,Ratio UFA : GFA?,~0.58,NO,"Derived from UFA/GFA, both unreproducible here."
+39,Fire rating of walls between treatment rooms?,Not available in model,PARTIAL,"We DO have wall.FireRating ('1 HR'/'2 HR'), treatment rooms (TRMT) and BOUNDED_BY -> potentially answerable, diverging from GT. Depends on the two TRMT rooms sharing a wall."
+40,Breakdown of steel column types + dimensions?,W150X22.5 + W250X67 (full dims),YES,Both sections present with matching dims: W150 d152/bf152/tw5.8/tf6.6; W250 d257/bf204/tw8.9/tf15.7 mm.
+41,Structural concept of the building?,Steel frame + concrete slabs,NO,"Narrative/reasoning answer, not a graph query (though steel columns + concrete slabs are present as evidence)."
+42,What are the foundations made of?,Cast-in-place reinforced concrete,YES,IfcFooting Material = 'Concrete - Cast In Situ'; Rebar_Cover props present ('reinforced' implied).
+43,Volume of concrete for the foundation?,167.61 m3,NO,"Sum of IfcFooting.Volume in our graph = 60.05 m3, not 167.61. Value mismatch (merge dropped/changed footing quantities)."

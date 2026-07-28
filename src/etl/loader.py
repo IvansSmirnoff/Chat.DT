@@ -553,6 +553,49 @@ class IFCToNeo4jLoader:
             if hasattr(filler, "GlobalId") and hasattr(opening, "GlobalId"):
                 yield (str(filler.GlobalId), str(opening.GlobalId))
 
+    def _extract_space_boundaries(self) -> Iterator[Tuple[str, str]]:
+        """
+        IfcRelSpaceBoundary: space -> the building element that bounds it
+        (wall, slab, door, window, ...). Lets queries answer "which walls
+        bound room X" / "which rooms does this door separate".
+
+        Virtual boundaries (PhysicalOrVirtualBoundary = VIRTUAL) carry no
+        RelatedBuildingElement and are skipped.
+
+        Yields (space_GlobalId, bounding_element_GlobalId).
+        """
+        if not self.ifc_file:
+            return
+        for rel in self.ifc_file.by_type("IfcRelSpaceBoundary"):
+            space = getattr(rel, "RelatingSpace", None)
+            element = getattr(rel, "RelatedBuildingElement", None)
+            if space is None or element is None:
+                continue
+            if hasattr(space, "GlobalId") and hasattr(element, "GlobalId"):
+                yield (str(space.GlobalId), str(element.GlobalId))
+
+    def _extract_connects_elements(self) -> Iterator[Tuple[str, str]]:
+        """
+        IfcRelConnectsElements (and its subtypes, e.g.
+        IfcRelConnectsPathElements for wall-to-wall path connectivity):
+        physical connection between two elements.
+
+        Direction is kept as authored (RelatingElement -> RelatedElement);
+        the connection is physically symmetric, so traverse undirected in
+        queries if needed.
+
+        Yields (relating_GlobalId, related_GlobalId).
+        """
+        if not self.ifc_file:
+            return
+        for rel in self.ifc_file.by_type("IfcRelConnectsElements"):
+            relating = getattr(rel, "RelatingElement", None)
+            related = getattr(rel, "RelatedElement", None)
+            if relating is None or related is None:
+                continue
+            if hasattr(relating, "GlobalId") and hasattr(related, "GlobalId"):
+                yield (str(relating.GlobalId), str(related.GlobalId))
+
     def _extract_material_associations(self) -> Iterator[Tuple[str, str, str]]:
         """
         Extract material association relationships from IFC.
@@ -783,6 +826,46 @@ class IFCToNeo4jLoader:
                 fills_count += len(batch)
             logger.info(f"Created {fills_count} FILLS relationships")
             rel_count += fills_count
+
+            # Space boundaries: (:IfcSpace)-[:BOUNDED_BY]->(:IfcElement)
+            logger.info("Processing space boundary relationships...")
+            batch = []
+            boundary_count = 0
+            for rel in self._extract_space_boundaries():
+                batch.append(rel)
+                if len(batch) >= BATCH_SIZE:
+                    session.execute_write(
+                        self._create_relationships_batch, batch, "BOUNDED_BY"
+                    )
+                    boundary_count += len(batch)
+                    batch = []
+            if batch:
+                session.execute_write(
+                    self._create_relationships_batch, batch, "BOUNDED_BY"
+                )
+                boundary_count += len(batch)
+            logger.info(f"Created {boundary_count} BOUNDED_BY relationships")
+            rel_count += boundary_count
+
+            # Element connectivity: (:IfcElement)-[:CONNECTED_TO]->(:IfcElement)
+            logger.info("Processing element connectivity relationships...")
+            batch = []
+            connects_count = 0
+            for rel in self._extract_connects_elements():
+                batch.append(rel)
+                if len(batch) >= BATCH_SIZE:
+                    session.execute_write(
+                        self._create_relationships_batch, batch, "CONNECTED_TO"
+                    )
+                    connects_count += len(batch)
+                    batch = []
+            if batch:
+                session.execute_write(
+                    self._create_relationships_batch, batch, "CONNECTED_TO"
+                )
+                connects_count += len(batch)
+            logger.info(f"Created {connects_count} CONNECTED_TO relationships")
+            rel_count += connects_count
 
             # Type definitions: (:IfcElement)-[:IS_OF_TYPE]->(:IfcTypeProduct)
             logger.info("Processing type-definition relationships...")

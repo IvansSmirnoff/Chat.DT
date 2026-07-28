@@ -69,6 +69,12 @@ class ExperimentConfig:
     # Cloud override
     cloud_direct: bool = False  # Force Settings 1-3 to Gemini 1.5 Flash
 
+    # Sanity passthrough — skip the LLM entirely and feed the gold Cypher (or
+    # serialised gold rows for Direct QA) as the "predicted" output. Used to
+    # prove the scoring pipeline gives EA=1 on gold; any deviation is a bug in
+    # scoring, not in the model.
+    gold_as_prediction: bool = False
+
     def __post_init__(self):
         if not self.name:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -533,51 +539,65 @@ class ExperimentRunner:
         
         # Determine output type
         output_type = OutputType.DIRECT_QA if setting.is_direct_qa else OutputType.CYPHER
-        
-        # Create engine for this setting
-        engine = self._create_engine_for_setting(setting)
-        
+
+        # Create engine for this setting — skipped entirely in gold-passthrough
+        # mode so we don't pay for model init when the LLM output is never used.
+        engine = (
+            None
+            if self.config.gold_as_prediction
+            else self._create_engine_for_setting(setting)
+        )
+
         results = []
         total = len(self.test_cases)
-        
+
         for i, case in enumerate(self.test_cases):
             question = case["question"]
             gold_cypher = case.get("gold_cypher")
             gold_ids = self.gold_id_sets.get(i, set())
-            
+
             logger.info(f"[{i+1}/{total}] Processing: {question[:50]}...")
-            
+
             # Generate output
-            try:
-                gen_result = engine.generate(
-                    question,
-                    experiment_setting=setting,
-                    model_context=self.model_context,
-                )
-                
+            if self.config.gold_as_prediction:
                 if setting.is_cypher_gen:
-                    output = gen_result.query or ""
+                    output = gold_cypher or ""
                 else:
-                    # For Direct QA, use raw output or serialize the answer
-                    if gen_result.raw_output:
-                        output = gen_result.raw_output
-                    elif gen_result.direct_answer is not None:
-                        output = json.dumps(gen_result.direct_answer)
+                    # Direct QA: emit the pre-tokenized gold IDs as a JSON list;
+                    # the scorer will coerce each element through
+                    # ``_coerce_direct_qa_token`` and recover the gold tokens.
+                    output = json.dumps(sorted(gold_ids))
+            else:
+                try:
+                    gen_result = engine.generate(
+                        question,
+                        experiment_setting=setting,
+                        model_context=self.model_context,
+                    )
+
+                    if setting.is_cypher_gen:
+                        output = gen_result.query or ""
                     else:
-                        output = "[]"
-                
-            except Exception as e:
-                logger.error(f"Generation failed: {e}")
-                result = EvaluationResult(
-                    question=question,
-                    experiment_setting=setting,
-                    output_type=output_type,
-                    gold_ids=gold_ids,
-                    gold_cypher=gold_cypher,
-                    error=f"Generation failed: {e}",
-                )
-                results.append(result)
-                continue
+                        # For Direct QA, use raw output or serialize the answer
+                        if gen_result.raw_output:
+                            output = gen_result.raw_output
+                        elif gen_result.direct_answer is not None:
+                            output = json.dumps(gen_result.direct_answer)
+                        else:
+                            output = "[]"
+
+                except Exception as e:
+                    logger.error(f"Generation failed: {e}")
+                    result = EvaluationResult(
+                        question=question,
+                        experiment_setting=setting,
+                        output_type=output_type,
+                        gold_ids=gold_ids,
+                        gold_cypher=gold_cypher,
+                        error=f"Generation failed: {e}",
+                    )
+                    results.append(result)
+                    continue
             
             # Evaluate output
             result = evaluate_output(

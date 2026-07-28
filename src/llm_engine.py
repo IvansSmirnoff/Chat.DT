@@ -546,7 +546,10 @@ class BaseLLMEngine(ABC):
         """Load combined IFC + IDS vocabulary (hybrid schema)."""
         from src.constraints.vocabulary_merger import build_combined_vocabulary
         
-        self.vocabulary = build_combined_vocabulary(ifc_path, ids_path)
+        # Keyword args: the signature is (ids_path, ifc_path), and passing them
+        # positionally in IFC-first order silently built the vocabulary with the
+        # two files swapped.
+        self.vocabulary = build_combined_vocabulary(ids_path=ids_path, ifc_path=ifc_path)
         self._context_builder = ContextBuilder(self.vocabulary)
         
         logger.info(
@@ -595,6 +598,8 @@ class LocalLLMEngine(BaseLLMEngine):
         self.generator = None
         self._regex_pattern = None
         self._strict_generator = None  # cached Outlines Generator (FSM)
+        self._tokenizer = None         # kept for apply_chat_template
+        self._backend = None
     
     def initialize(self) -> None:
         """Initialize the local model with Outlines."""
@@ -639,23 +644,60 @@ class LocalLLMEngine(BaseLLMEngine):
                 torch_dtype=torch.float16,
             )
             hf_tokenizer = AutoTokenizer.from_pretrained(model_path)
+            self._tokenizer = hf_tokenizer
             self.model = outlines.from_transformers(hf_model, hf_tokenizer)
+
+        logger.info("MODEL WEIGHTS LOADED ONCE: %s (backend=%s)", model_path, self._backend)
 
         self._regex_pattern = self._get_regex_pattern()
         if self._regex_pattern:
-            logger.info("Built constraint regex from schema")
+            logger.info(
+                "Built constraint regex from schema (%d chars)", len(self._regex_pattern)
+            )
             try:
+                import time
+
                 from outlines import Generator
                 from outlines.types import Regex
                 logger.info("Compiling Outlines FSM (one-time)…")
+                t0 = time.monotonic()
                 self._strict_generator = Generator(self.model, Regex(self._regex_pattern))
-                logger.info("Outlines FSM cached")
+                logger.info(
+                    "FSM COMPILED ONCE in %.1fs — cached for the whole run",
+                    time.monotonic() - t0,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to pre-compile Outlines Generator: %s", exc)
                 self._strict_generator = None
 
         self._initialized = True
         logger.info("Local LLM engine initialized")
+
+    def _apply_chat_template(self, prompt: str) -> str:
+        """Wrap a raw prompt in the model's chat template.
+
+        Instruction-tuned models (Qwen2.5-*-Instruct among them) are trained
+        with a specific role-tagged format; feeding them bare text degrades
+        output quality. It degrades CYPHER_SOFT more than CYPHER_STRICT,
+        because strict decoding masks malformed output that soft decoding
+        emits verbatim — so skipping the template would bias the comparison in
+        favour of the constrained setting.
+
+        Falls back to the raw prompt when the tokenizer has no template
+        (base models, llama.cpp backend).
+        """
+        tokenizer = self._tokenizer
+        if tokenizer is None or not getattr(tokenizer, "chat_template", None):
+            return prompt
+        try:
+            return tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("apply_chat_template failed, using raw prompt: %s", exc)
+            return prompt
     
     def _truncate_model_context(self, model_context: str, max_chars: int = 50000) -> str:
         """
@@ -721,7 +763,7 @@ class LocalLLMEngine(BaseLLMEngine):
         
         # Generate (unconstrained for speed)
         direct_qa_kwargs = {"max_tokens": 512} if self._backend == "llamacpp" else {"max_new_tokens": 512}
-        raw_output = self.model(prompt, **direct_qa_kwargs)
+        raw_output = self.model(self._apply_chat_template(prompt), **direct_qa_kwargs)
         
         # Validate output
         is_valid, parsed_list = self._validate_json_list(raw_output)
@@ -762,7 +804,10 @@ class LocalLLMEngine(BaseLLMEngine):
             system_prompt += CYPHER_SOFT_CONSTRAINT_SUFFIX
         
         prompt = f"{system_prompt}\n\nQuestion: {user_query}\n\nCypher:"
-        
+        # Both settings get the same chat formatting, so the soft/strict
+        # comparison differs only in the decoding constraint.
+        model_input = self._apply_chat_template(prompt)
+
         # Generate based on constraint mode
         # llama.cpp uses max_tokens; transformers uses max_new_tokens
         gen_kwargs = {"max_tokens": 256} if self._backend == "llamacpp" else {"max_new_tokens": 256}
@@ -770,13 +815,14 @@ class LocalLLMEngine(BaseLLMEngine):
         if use_strict and self._regex_pattern:
             logger.debug("Using STRICT constrained generation")
             if self._strict_generator is None:
-                logger.info("Compiling Outlines FSM (lazy)…")
+                # Only reachable if pre-compilation in initialize() failed.
+                logger.warning("Outlines FSM missing at generation time; compiling now")
                 self._strict_generator = Generator(self.model, Regex(self._regex_pattern))
-            raw_output = self._strict_generator(prompt, **gen_kwargs)
+            raw_output = self._strict_generator(model_input, **gen_kwargs)
             is_constrained = True
         else:
             logger.debug("Using unconstrained generation")
-            raw_output = self.model(prompt, **gen_kwargs)
+            raw_output = self.model(model_input, **gen_kwargs)
             is_constrained = False
         
         # Log raw output for debugging
@@ -1548,7 +1594,7 @@ def generate_for_experiment(
         if ifc_path and Path(ifc_path).exists():
             from src.constraints.vocabulary_merger import build_combined_vocabulary
             ids_arg = ids_path if ids_path and Path(ids_path).exists() else None
-            vocabulary = build_combined_vocabulary(ifc_path, ids_arg)
+            vocabulary = build_combined_vocabulary(ids_path=ids_arg, ifc_path=ifc_path)
         elif ids_path and Path(ids_path).exists():
             parser = IDSParser()
             schema = parser.parse(ids_path)
@@ -1597,7 +1643,9 @@ def main():
         try:
             from src.constraints.vocabulary_merger import build_combined_vocabulary
             ids_path = settings.ids_file_path if settings.ids_file_path.exists() else None
-            vocabulary = build_combined_vocabulary(settings.ifc_file_path, ids_path)
+            vocabulary = build_combined_vocabulary(
+                ids_path=ids_path, ifc_path=settings.ifc_file_path
+            )
             print(f"Vocabulary: {len(vocabulary.get_entity_names())} entities, "
                   f"{len(vocabulary.get_all_property_names())} properties (hybrid)")
         except Exception as e:

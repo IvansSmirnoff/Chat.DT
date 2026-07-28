@@ -42,12 +42,16 @@ services:
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_MODEL_NAME=${LLM_MODEL_NAME:-gemini-1.5-pro}
       - LLM_BASE_URL=${LLM_BASE_URL:-}
-      - IFC_FILE_PATH=/app/data/model.ifc
-      - IDS_FILE_PATH=/app/data/requirements.ids
+      - IFC_FILE_PATH=${IFC_FILE_PATH:-/app/data/model.ifc}
+      - IDS_FILE_PATH=${IDS_FILE_PATH:-/app/data/requirements.ids}
+      - TEST_SET_PATH=${TEST_SET_PATH:-}
       - DEBUG=${DEBUG:-false}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ./src:/app/src:ro
+      # scripts/ must be mounted alongside src/, otherwise `docker exec ... python
+      # scripts/foo.py` silently runs the copy baked into the image.
+      - ./scripts:/app/scripts:ro
       - ./data:/app/data
       - ./config:/app/config:ro
       - ./tests:/app/tests:ro
@@ -77,8 +81,9 @@ services:
       - API_BEARER_TOKEN=${API_BEARER_TOKEN:-}
       - API_HOST=0.0.0.0
       - API_PORT=8000
-      - IFC_FILE_PATH=/app/data/model.ifc
-      - IDS_FILE_PATH=/app/data/requirements.ids
+      - IFC_FILE_PATH=${IFC_FILE_PATH:-/app/data/model.ifc}
+      - IDS_FILE_PATH=${IDS_FILE_PATH:-/app/data/requirements.ids}
+      - TEST_SET_PATH=${TEST_SET_PATH:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ./src:/app/src:ro

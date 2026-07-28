@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -132,6 +132,14 @@ class Settings(BaseSettings):
         default=None,
         description="Path to the model dump JSON file for Direct QA mode",
     )
+
+    test_set_path: Optional[Path] = Field(
+        default=None,
+        description="Path to the test-set CSV/JSON the API should serve. "
+                    "Takes precedence over the /app/data/test_set.{csv,json} "
+                    "defaults, so a run can point at e.g. ch9_demo_b15.json "
+                    "without renaming files.",
+    )
     
     # Application Settings
     debug: bool = Field(
@@ -157,6 +165,20 @@ class Settings(BaseSettings):
         default=8000,
         description="Port for the FastAPI app",
     )
+
+    @field_validator("model_dump_path", "test_set_path", mode="before")
+    @classmethod
+    def _blank_optional_path_is_none(cls, v):
+        """Treat an empty/whitespace env var as unset.
+
+        ``TEST_SET_PATH=${TEST_SET_PATH:-}`` in docker-compose reaches the
+        process as the empty string, and ``Path("")`` is ``Path(".")`` — an
+        existing directory. Without this, "unset" silently resolves to the
+        working directory.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @property
     def neo4j_password_value(self) -> str:

@@ -17,8 +17,10 @@ Design rules
 * Few-shot generation iterates a small set of templates whose
   preconditions are checked against the current vocabulary +
   enumerations + (optional) graph stats. Variable bindings are always
-  single lowercase letters reused verbatim in WHERE/RETURN — required by
-  the strict-mode REF_VARIABLE FSM trap.
+  single lowercase letters reused verbatim in WHERE/RETURN. The grammar's
+  ``IDENT`` now admits 1-3 chars, so this is no longer a hard requirement —
+  but examples must still stay inside ``IDENT``, and reusing the bound name
+  verbatim is what teaches the model to do the same.
 """
 
 from __future__ import annotations

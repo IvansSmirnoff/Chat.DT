@@ -30,6 +30,20 @@ DEFAULT_TEST_SET_CANDIDATES = (
 
 
 def _resolve_default_test_set() -> Optional[Path]:
+    """Explicit TEST_SET_PATH wins; otherwise fall back to the conventional names."""
+    # An unset compose variable arrives as the empty string, and Path("") is
+    # Path(".") — a directory that exists. Without the strip()/is_file() guard
+    # the API would "resolve" the test set to the working directory.
+    configured = settings.test_set_path
+    if configured is not None and str(configured).strip():
+        configured = Path(str(configured).strip())
+        if configured.is_file():
+            return configured
+        logger.warning(
+            "TEST_SET_PATH is set to %s but that file does not exist; "
+            "falling back to the default candidates.",
+            configured,
+        )
     for candidate in DEFAULT_TEST_SET_CANDIDATES:
         if candidate.exists():
             return candidate
@@ -47,8 +61,11 @@ def _build_state() -> ApiState:
     from neo4j import GraphDatabase
 
     from src.constraints.ids_parser import IDSParser, IDSSchema
-    from src.constraints.vocabulary_merger import build_combined_vocabulary
-    from src.eval.neo4j_exec import execute_gold_queries
+    from src.constraints.vocabulary_merger import (
+        build_combined_vocabulary,
+        merge_graph_stats_into_vocabulary,
+    )
+    from src.eval.neo4j_exec import collect_graph_stats, execute_gold_queries
     from src.eval.runner import load_test_set
 
     driver = GraphDatabase.driver(
@@ -67,6 +84,11 @@ def _build_state() -> ApiState:
         ifc_arg = ifc_path if Path(ifc_path).exists() else None
         if ids_arg or ifc_arg:
             vocabulary = build_combined_vocabulary(ids_arg, ifc_arg)
+            # Same merge the bundle builder applies. Without it the API scores
+            # SCR against the IFC scan's 23 labels while the client decodes
+            # against the graph's 76, so a perfectly valid `IfcMaterial` query
+            # is counted as a schema violation.
+            merge_graph_stats_into_vocabulary(vocabulary, collect_graph_stats(driver))
             logger.info(
                 "Loaded vocabulary: %d entities, %d properties",
                 len(vocabulary.get_entity_names()),

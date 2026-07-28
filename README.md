@@ -1008,6 +1008,7 @@ from Colab, only the authenticated API on port 8000.
 | `ifc_file_path` | `IFC_FILE_PATH` | `/app/data/model.ifc` | Path to IFC file |
 | `ids_file_path` | `IDS_FILE_PATH` | `/app/data/requirements.ids` | Path to IDS file |
 | `model_dump_path` | `MODEL_DUMP_PATH` | - | Path to model dump JSON (for Direct QA) |
+| `test_set_path` | `TEST_SET_PATH` | - | Test set the API serves at `GET /test-set`. Overrides the `/app/data/test_set.{csv,json}` defaults, so a run can target e.g. `ch9_demo_b15.json` without renaming files |
 | `api_bearer_token` | `API_BEARER_TOKEN` | _(empty)_ | Shared secret for the FastAPI proxy. Empty value disables the API (503 on every auth'd call) |
 | `api_host` | `API_HOST` | `0.0.0.0` | Interface the FastAPI app binds to |
 | `api_port` | `API_PORT` | `8000` | Port the FastAPI app listens on |
@@ -1309,6 +1310,7 @@ The loader materialises six edge types from IFC reification entities. Counts bel
 | `LLM_MODEL_NAME` | `Qwen/Qwen2.5-Coder-3B-Instruct` | Model identifier |
 | `IFC_FILE_PATH` | `/app/data/model.ifc` | BIM model file |
 | `IDS_FILE_PATH` | `/app/data/requirements.ids` | IDS constraints |
+| `TEST_SET_PATH` | _(empty)_ | Test set served by the API; empty falls back to `test_set.csv` / `test_set.json` |
 
 ### 9.2 Running the Full Experiment
 
@@ -1366,6 +1368,108 @@ lives there (one tree, no duplication).
 ---
 
 ## Appendix B: Development Changelog
+
+### 2026-05-06: Graph-sourced prompt context (Known Values + dynamic few-shots)
+
+`CYPHER_STRICT` prompt content was the §10 bottleneck after the
+2026-05-05 grammar work — the system prompt baked Revit-author
+conventions (`'EI60'`, `W-001`, `Building_Story = 2`) that were
+wrong for Barcelona and would be wrong again for any future model.
+Replaced the entire content layer with two graph-sourced bundle
+fields, both sampled from the live Neo4j graph at bundle build time.
+
+#### What changed
+
+- **`src/constraints/value_sampler.py`** (new). Two pure functions
+  taking a `neo4j.Driver`:
+  - `sample_value_enumerations(driver, vocab, max_cardinality=50)` —
+    returns `{"Label.prop": [v1, v2, ...]}` for low-cardinality
+    categorical strings. Per-entity property cap (12) with
+    `Name / LongName / ObjectType / PredefinedType / FireRating /
+    Material / Category` prioritised so the cap doesn't starve them.
+    Excludes `GlobalId / Tag / OwnerHistory / ObjectPlacement /
+    Description / LongDescription / Representation`. Filters out
+    numeric-only and long-free-text values.
+  - `generate_few_shot_examples(driver, vocab, enumerations, n=5)` —
+    fills five query-shape templates (count by label / filter by
+    categorical / storey-CONTAINS / aggregate numeric / top-1-DESC)
+    with values sampled from the graph. Templates only fire when
+    their preconditions are met (entity exists with non-zero count,
+    relationship exists, etc.). Every emitted example is
+    smoke-executed against the driver before it ships — broken
+    templates are silently dropped.
+  - Pre-fetches `(label, property)` pairs via
+    `db.schema.nodeTypeProperties()` so dead pset keys never get
+    probed (eliminates `UnknownPropertyKeyWarning` chatter).
+- **`src/constraints/context_builder.py`** — `ContextBuilder`
+  accepts `value_enumerations` + `few_shot_examples` kwargs, emits
+  a `## Known Values` block above `## Query Guidelines` and an
+  `## Examples` block at the end. `DEFAULT_FEW_SHOT_EXAMPLES = []`
+  — no hardcoded literals to mislead the model on a fresh dataset.
+  The `## Known Values` block is omitted entirely when the
+  enumeration map is empty.
+- **`src/llm_engine.py`** — Engine constructors and
+  `create_llm_engine()` accept `few_shot_examples` +
+  `value_enumerations` and forward to `ContextBuilder`. Inline
+  duplicate few-shot block in `CYPHER_SYSTEM_PROMPT_TEMPLATE`
+  removed (single source of truth = `ContextBuilder`).
+- **`scripts/build_bundle.py`** — Calls both samplers, adds
+  `value_enumerations` + `few_shot_examples` to the bundle dict,
+  bumps `schema_version` to **2**. Hard-fails if Neo4j is
+  unreachable (graph-sourced fields are load-bearing for prompt
+  quality; an empty fallback would silently weaken the model).
+  Silences `neo4j.notifications` logger to drop the residual
+  deprecated-procedure notice from
+  `db.schema.nodeTypeProperties()`.
+- **`src/client/runner.py`** + **`src/eval/runner.py`** — Both
+  thread the new fields into `create_llm_engine()`. Colab path
+  reads from the bundle; CLI path samples inline against the live
+  driver in `setup()` so both flows produce identical prompts.
+- **Tests**: `tests/test_value_sampler.py` (11 cases) +
+  `tests/test_context_builder.py` (4 cases) added, both use a fake
+  Neo4j driver so no live DB is required. 94/94 tests pass.
+
+#### Run: `results/barcelona_strict_original_few_shot/`
+
+Qwen 2.5-7B-Instruct, `cypher_strict`, 28 cases, 2026-05-06.
+
+| metric                  | before (§8) | after (§11) | delta     |
+|-------------------------|-------------|-------------|-----------|
+| svr_mean                | 0.964       | 0.857       | -0.107    |
+| scr_mean                | 0.735       | **0.802**   | +0.067    |
+| ea_mean (raw)           | 0.322       | 0.429       | +0.107    |
+| f1_mean                 | 0.001       | 0.179       | +0.178    |
+| **ea_mean_non_trivial** | **0.001**   | **0.294**   | **+0.293**|
+| **f1_mean_non_trivial** | **0.002**   | **0.294**   | **+0.292**|
+| non_trivial_count       | 17          | 17          | —         |
+
+Decision rule (§10) was ΔEA_nt > +0.10 → ship. Got +0.293, ~3×
+the threshold. Storey naming (`s.Name = 'Level 2'`) — the chronic
+blocker through §1–§10 — is now textbook on q0/q4 because the
+Known Values block exposes the literal storey labels the graph
+holds (`'Level -1', 'Level 0', ..., 'Level 4', 'PC', 'PC 2'`).
+
+#### Files added
+- `src/constraints/value_sampler.py`
+- `tests/test_value_sampler.py`, `tests/test_context_builder.py`
+
+#### Files modified
+- `src/constraints/context_builder.py` — `## Known Values` block,
+  `DEFAULT_FEW_SHOT_EXAMPLES = []`.
+- `src/llm_engine.py` — engine kwargs, removed inline few-shots
+  from `CYPHER_SYSTEM_PROMPT_TEMPLATE`.
+- `scripts/build_bundle.py` — sampler integration,
+  `schema_version: 2`, hard-fail on Neo4j unreachable.
+- `src/client/runner.py`, `src/eval/runner.py` — forward new
+  fields to the engine; eval runner samples inline.
+- `src/api/main.py`, `src/client/runner.py` — drop
+  `extended_test_set.json` from default-resolution chain;
+  `data/test_set.json` is the canonical name.
+- `CLAUDE.md` — `value_sampler.py` description, prompt-content
+  rule (no hardcoded IFC literals), current `CYPHER_STRICT`
+  baseline numbers.
+
+---
 
 ### 2026-05-05: Grammar relaxation + FSM-trap caps + dead-code purge
 

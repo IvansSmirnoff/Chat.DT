@@ -61,7 +61,7 @@
   },
   {
     "question": "Which properties of windows are related to their orientation or position in the building?",
-    "gold_cypher": "MATCH (w:IfcWindow) RETURN keys(w)",
+    "gold_cypher": "MATCH (w:IfcWindow) UNWIND keys(w) AS k WITH DISTINCT k WHERE k IN ['IsExternal','Head_Height','Sill_Height','Host_Id','Level'] OR toLower(k) CONTAINS 'orient' OR toLower(k) CONTAINS 'position' RETURN collect(k)",
     "category": "basic_query",
     "difficulty": "Medium"
   },
@@ -73,7 +73,7 @@
   },
   {
     "question": "Which walls on the ground floor are classified as load-bearing and have a height greater than 3 meters?",
-    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(w:IfcWall) WHERE s.Name = 'Level 0' AND w.LoadBearing = true AND w.Unconnected_Height > 3000 RETURN w",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(w) WHERE s.Name='Level 0' AND (w:IfcWall OR w:IfcCurtainWall) AND w.Structural_Usage='Bearing' AND w.Unconnected_Height>3000 RETURN w",
     "category": "property_filter",
     "difficulty": "Hard"
   },
@@ -109,13 +109,13 @@
   },
   {
     "question": "Which walls are supporting other structural elements in the building?",
-    "gold_cypher": "MATCH (w:IfcWall)-[:SUPPORTS]->(e) RETURN w, e",
+    "gold_cypher": "MATCH (w) WHERE (w:IfcWall OR w:IfcCurtainWall) AND w.Structural_Usage='Bearing' RETURN w",
     "category": "relationship",
     "difficulty": "Hard"
   },
   {
     "question": "What is the total area enclosed by the walls on the second floor?",
-    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:DECOMPOSES]->(sp:IfcSpace) WHERE s.Name = 'Level 2' RETURN sum(sp.NetFloorArea)",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(sl:IfcSlab) WHERE s.Name='Level 2' RETURN sum(sl.Area)",
     "category": "relationship",
     "difficulty": "Hard"
   },
@@ -139,7 +139,7 @@
   },
   {
     "question": "Which ramps in the building are accessible according to universal design standards?",
-    "gold_cypher": "MATCH (r:IfcRamp) WHERE r.Ramp_Max_Slope__1_x_ >= 12 RETURN r",
+    "gold_cypher": "MATCH (r:IfcRamp) WHERE r.Maximum_Incline_Length / abs(coalesce(r.Base_Offset,0) - coalesce(r.Top_Offset,0)) >= 12 RETURN r",
     "category": "property_filter",
     "difficulty": "Medium"
   },

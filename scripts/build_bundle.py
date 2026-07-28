@@ -38,7 +38,11 @@ from src.constraints.value_sampler import (
     generate_few_shot_examples,
     sample_value_enumerations,
 )
-from src.constraints.vocabulary_merger import build_combined_vocabulary
+from src.constraints.vocabulary_merger import (
+    build_combined_vocabulary,
+    merge_graph_stats_into_vocabulary,
+)
+from src.eval.neo4j_exec import collect_graph_stats
 from scripts.create_model_dump import export_from_ifc
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -83,30 +87,6 @@ def _open_driver(uri: str, user: str, password: str):
     return driver
 
 
-def collect_graph_stats(driver) -> Dict[str, Any]:
-    """Query Neo4j for node/relationship counts per label and type."""
-    stats: Dict[str, Any] = {"labels": {}, "relationships": {}, "totals": {}}
-    with driver.session() as session:
-        label_result = session.run("CALL db.labels() YIELD label RETURN label")
-        for record in label_result:
-            label = record["label"]
-            count = session.run(f"MATCH (n:`{label}`) RETURN count(n) AS c").single()["c"]
-            stats["labels"][label] = count
-
-        rel_result = session.run("CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType")
-        for record in rel_result:
-            rtype = record["relationshipType"]
-            count = session.run(f"MATCH ()-[r:`{rtype}`]->() RETURN count(r) AS c").single()["c"]
-            stats["relationships"][rtype] = count
-
-        stats["totals"]["nodes"] = session.run("MATCH (n) RETURN count(n) AS c").single()["c"]
-        stats["totals"]["relationships"] = session.run(
-            "MATCH ()-[r]->() RETURN count(r) AS c"
-        ).single()["c"]
-
-    return stats
-
-
 def build_bundle(
     ifc_path: Path,
     ids_path: Optional[Path],
@@ -139,6 +119,10 @@ def build_bundle(
     try:
         logger.info("Collecting graph stats")
         graph_stats = collect_graph_stats(driver)
+
+        # Must run before value sampling / few-shot generation so both see the
+        # full label set.
+        merge_graph_stats_into_vocabulary(vocab, graph_stats)
 
         logger.info("Sampling value enumerations from graph")
         value_enumerations = sample_value_enumerations(driver, vocab)

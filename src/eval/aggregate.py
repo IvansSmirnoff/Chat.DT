@@ -14,6 +14,7 @@ from src.config import ExperimentSetting
 from src.eval.scoring import (
     EvaluationResult,
     OutputType,
+    _coerce_direct_qa_token,
     calculate_ea_from_ids,
     calculate_scr_cypher,
     calculate_svr_json,
@@ -137,7 +138,9 @@ def evaluate_direct_qa_output(
     
     # Calculate EA
     if is_valid and parsed_list is not None:
-        result.generated_ids = set(parsed_list)
+        result.generated_ids = {
+            _coerce_direct_qa_token(item) for item in parsed_list
+        }
         result.ea = calculate_ea_from_ids(result.generated_ids, gold_ids)
     else:
         result.ea = 0.0
@@ -292,6 +295,21 @@ def evaluate_batch(
 # Aggregation
 # =============================================================================
 
+def _is_scalar_gold(gold_ids: Set[str]) -> bool:
+    """A gold set is 'scalar-shaped' iff it is non-empty and every token sits in
+    the ``num:``/``bool:`` namespace produced by aggregation results
+    (count/sum/avg/min/max). Used to split the EA mean so the paper can report
+    'model got the right number' separately from 'model got the right element
+    set'.
+    """
+    if not gold_ids:
+        return False
+    return all(
+        isinstance(t, str) and (t.startswith("num:") or t.startswith("bool:"))
+        for t in gold_ids
+    )
+
+
 def aggregate_results(results: List[EvaluationResult]) -> Dict[str, Any]:
     """
     Aggregate evaluation results into summary statistics.
@@ -346,14 +364,39 @@ def aggregate_results(results: List[EvaluationResult]) -> Dict[str, Any]:
         summary["cypher_svr_mean"] = sum(r.svr for r in cypher_results) / len(cypher_results)
         summary["cypher_scr_mean"] = sum(r.scr for r in cypher_results) / len(cypher_results)
         summary["cypher_ea_mean"] = sum(r.ea for r in cypher_results) / len(cypher_results)
-    
+
     if direct_qa_results:
         summary["direct_qa_svr_mean"] = sum(r.svr for r in direct_qa_results) / len(direct_qa_results)
         summary["direct_qa_ea_mean"] = sum(r.ea for r in direct_qa_results) / len(direct_qa_results)
-    
+
+    # Split EA over non-trivial cases by gold shape so a scalar-heavy test set
+    # (count/sum/avg) doesn't drown out element-set performance and vice versa.
+    scalar_results = [r for r in results if _is_scalar_gold(r.gold_ids)]
+    set_results = [
+        r for r in results if r.gold_ids and not _is_scalar_gold(r.gold_ids)
+    ]
+    summary["scalar_count"] = len(scalar_results)
+    summary["set_count"] = len(set_results)
+    summary["ea_mean_scalar"] = (
+        sum(r.ea for r in scalar_results) / len(scalar_results)
+        if scalar_results else 0.0
+    )
+    summary["ea_mean_set"] = (
+        sum(r.ea for r in set_results) / len(set_results)
+        if set_results else 0.0
+    )
+    summary["f1_mean_scalar"] = (
+        sum(r._calculate_f1() for r in scalar_results) / len(scalar_results)
+        if scalar_results else 0.0
+    )
+    summary["f1_mean_set"] = (
+        sum(r._calculate_f1() for r in set_results) / len(set_results)
+        if set_results else 0.0
+    )
+
     # Add metrics by difficulty level (Complexity Analysis)
     summary["metrics_by_difficulty"] = aggregate_by_difficulty(results)
-    
+
     return summary
 
 

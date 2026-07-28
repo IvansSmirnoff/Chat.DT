@@ -8,16 +8,16 @@ re-scoring pre-computed results).
 """
 
 import logging
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from neo4j import GraphDatabase
 from neo4j.exceptions import CypherSyntaxError, Neo4jError
 
 from src.eval.scoring import (
     OutputType,
-    _extract_global_id,
     calculate_ea_direct,
     calculate_ea_from_ids,
+    tokenize_record,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,9 @@ def calculate_svr_cypher(
     Returns:
         Tuple of (svr_score, is_valid, error_message)
     """
+    if not query or not query.strip():
+        return 0.0, False, "Empty query"
+
     should_close_driver = False
     if driver is None:
         if not all([neo4j_uri, neo4j_user, neo4j_password]):
@@ -131,18 +134,17 @@ def execute_and_get_ids(
     Returns:
         Tuple of (set_of_ids, error_message)
     """
-    ids = set()
-    
+    ids: Set[str] = set()
+
     try:
         with driver.session() as session:
             result = session.run(query)
-            
+
             for record in result:
-                for value in record.values():
-                    extracted_id = _extract_global_id(value, id_property)
-                    if extracted_id:
-                        ids.add(extracted_id)
-                        
+                token = tokenize_record(record, id_property)
+                if token:
+                    ids.add(token)
+
     except Exception as e:
         logger.warning(f"Cypher execution failed: {e} | Query: {query[:200]}")
         return set(), str(e)
@@ -260,6 +262,37 @@ def execute_gold_queries(
     
     logger.info(f"Gold query execution complete. "
                 f"Total IDs: {sum(len(ids) for ids in gold_results.values())}")
-    
+
     return gold_results
+
+
+def collect_graph_stats(driver) -> Dict[str, Any]:
+    """Query Neo4j for node/relationship counts per label and type.
+
+    This is the authoritative view of what the graph actually contains — the IFC
+    scan sees fewer labels and fewer relationship types. Feed the result to
+    ``merge_graph_stats_into_vocabulary`` so grammar, prompt and SCR all agree.
+    """
+    stats: Dict[str, Any] = {"labels": {}, "relationships": {}, "totals": {}}
+    with driver.session() as session:
+        label_result = session.run("CALL db.labels() YIELD label RETURN label")
+        for record in label_result:
+            label = record["label"]
+            count = session.run(f"MATCH (n:`{label}`) RETURN count(n) AS c").single()["c"]
+            stats["labels"][label] = count
+
+        rel_result = session.run(
+            "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
+        )
+        for record in rel_result:
+            rtype = record["relationshipType"]
+            count = session.run(f"MATCH ()-[r:`{rtype}`]->() RETURN count(r) AS c").single()["c"]
+            stats["relationships"][rtype] = count
+
+        stats["totals"]["nodes"] = session.run("MATCH (n) RETURN count(n) AS c").single()["c"]
+        stats["totals"]["relationships"] = session.run(
+            "MATCH ()-[r]->() RETURN count(r) AS c"
+        ).single()["c"]
+
+    return stats
 

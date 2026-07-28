@@ -97,6 +97,16 @@ Settings:
         ),
     )
     parser.add_argument(
+        "--gold-as-prediction",
+        action="store_true",
+        help=(
+            "Skip the LLM and feed the gold Cypher (or serialised gold rows for "
+            "Direct QA) as the predicted output. Sanity check: a clean run should "
+            "score EA=1.0 / F1=1.0 / SCR=1.0 / SVR=1.0 on every non-trivial case. "
+            "Any deviation is a scoring bug, not a model bug."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging",
@@ -118,6 +128,7 @@ Settings:
         test_set_path=args.test_set,
         output_dir=args.output,
         model_dump_path=args.model_dump,
+        gold_as_prediction=args.gold_as_prediction,
     )
     
     # Determine which settings to run

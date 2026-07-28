@@ -1,0 +1,170 @@
+[
+  {
+    "question": "How many spaces are there in the building?",
+    "gold_cypher": "MATCH (s:IfcSpace) RETURN count(s)",
+    "category": "basic_query",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "How many building storeys does the model contain?",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey) RETURN count(s)",
+    "category": "basic_query",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "How many doors are in the model?",
+    "gold_cypher": "MATCH (d:IfcDoor) RETURN count(d)",
+    "category": "basic_query",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "How many windows are in the model?",
+    "gold_cypher": "MATCH (w:IfcWindow) RETURN count(w)",
+    "category": "basic_query",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "How many walls are in the model?",
+    "gold_cypher": "MATCH (w:IfcWall) RETURN count(w)",
+    "category": "basic_query",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "List the names of all building storeys.",
+    "gold_cypher": "MATCH (s:IfcBuildingStorey) RETURN s.Name",
+    "category": "basic_query",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "How many rooms are classified as offices?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'UFFICI' RETURN count(s)",
+    "category": "property_filter",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "How many toilets are there in the building?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'WC' RETURN count(s)",
+    "category": "property_filter",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "How many meeting rooms are in the building?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'SALA RIUNIONI' RETURN count(s)",
+    "category": "property_filter",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "What are the distinct room categories used in the model?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE IS NOT NULL RETURN DISTINCT s.SBSm_CATEGORIA_DESCRIZIONE",
+    "category": "property_filter",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "How many rooms are on the level named ARC_MIA0206_PCA_0.00m?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.Livello = 'ARC_MIA0206_PCA_0.00m' RETURN count(s)",
+    "category": "property_filter",
+    "difficulty": "Easy"
+  },
+  {
+    "question": "How many rooms have the floor covering PAV_1cm_PMM_07?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.FloorCovering = 'PAV_1cm_PMM_07' RETURN count(s)",
+    "category": "property_filter",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "How many fire-rated doors are there?",
+    "gold_cypher": "MATCH (d:IfcDoor) WHERE d.PBSa_DESCRIZIONE = 'Porta, Portafinestra REI/EI' RETURN count(d)",
+    "category": "property_filter",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "How many doors have a thickness value greater than 3?",
+    "gold_cypher": "MATCH (d:IfcDoor) WHERE d.SPESSORE > 3 RETURN count(d)",
+    "category": "property_filter",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "Which rooms are marked as external?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.ESTERNO = true RETURN s.Numero, s.Nome",
+    "category": "property_filter",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "How many spaces belong to the storey ARC_MIA0206_PCA_3.60m?",
+    "gold_cypher": "MATCH (st:IfcBuildingStorey)-[:DECOMPOSES]->(s:IfcSpace) WHERE st.Name = 'ARC_MIA0206_PCA_3.60m' RETURN count(s)",
+    "category": "relationship",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "How many doors are on the storey ARC_MIA0206_PCA_0.00m?",
+    "gold_cypher": "MATCH (st:IfcBuildingStorey)-[:CONTAINS]->(d:IfcDoor) WHERE st.Name = 'ARC_MIA0206_PCA_0.00m' RETURN count(d)",
+    "category": "relationship",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "How many windows are on the storey ARC_MIA0206_PCA_3.60m?",
+    "gold_cypher": "MATCH (st:IfcBuildingStorey)-[:CONTAINS]->(w:IfcWindow) WHERE st.Name = 'ARC_MIA0206_PCA_3.60m' RETURN count(w)",
+    "category": "relationship",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "How many elements bound the room with number 021?",
+    "gold_cypher": "MATCH (s:IfcSpace)-[:BOUNDED_BY]->(e) WHERE s.Numero = '021' RETURN count(e)",
+    "category": "relationship",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "How many elements are made of the material MAT_VET_Vetro?",
+    "gold_cypher": "MATCH (e)-[:HAS_MATERIAL]->(m:IfcMaterial) WHERE m.Name = 'MAT_VET_Vetro' RETURN count(e)",
+    "category": "relationship",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "How many walls have at least one opening?",
+    "gold_cypher": "MATCH (w:IfcWall)-[:HAS_OPENING]->(:IfcOpeningElement) RETURN count(DISTINCT w)",
+    "category": "relationship",
+    "difficulty": "Medium"
+  },
+  {
+    "question": "How many openings are filled by a door?",
+    "gold_cypher": "MATCH (d:IfcDoor)-[:FILLS]->(o:IfcOpeningElement) RETURN count(DISTINCT o)",
+    "category": "relationship",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "Which room categories appear on the storey ARC_MIA0206_PCA_7.10m?",
+    "gold_cypher": "MATCH (st:IfcBuildingStorey)-[:DECOMPOSES]->(s:IfcSpace) WHERE st.Name = 'ARC_MIA0206_PCA_7.10m' RETURN DISTINCT s.SBSm_CATEGORIA_DESCRIZIONE",
+    "category": "relationship",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "Which storey has the most offices?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'UFFICI' RETURN s.Livello, count(s) AS n ORDER BY n DESC LIMIT 1",
+    "category": "reasoning",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "What is the most common room category in the building?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE IS NOT NULL RETURN s.SBSm_CATEGORIA_DESCRIZIONE, count(s) AS n ORDER BY n DESC LIMIT 1",
+    "category": "reasoning",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "Which storey contains the most doors?",
+    "gold_cypher": "MATCH (st:IfcBuildingStorey)-[:CONTAINS]->(d:IfcDoor) RETURN st.Name, count(d) AS n ORDER BY n DESC LIMIT 1",
+    "category": "reasoning",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "Which material is used by the largest number of elements?",
+    "gold_cypher": "MATCH (e)-[:HAS_MATERIAL]->(m:IfcMaterial) RETURN m.Name, count(e) AS n ORDER BY n DESC LIMIT 1",
+    "category": "reasoning",
+    "difficulty": "Hard"
+  },
+  {
+    "question": "How many offices are there on each storey?",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'UFFICI' RETURN s.Livello, count(s) AS n ORDER BY n DESC",
+    "category": "reasoning",
+    "difficulty": "Hard"
+  }
+]

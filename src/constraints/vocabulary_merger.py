@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .ids_parser import IDSParser, IDSSchema
 from .schema_scanner import IFCSchemaScanner, IFCModelSchema
@@ -219,6 +219,48 @@ class CombinedVocabulary:
 # =============================================================================
 # Vocabulary Merger
 # =============================================================================
+
+def merge_graph_stats_into_vocabulary(
+    vocab: CombinedVocabulary,
+    graph_stats: Dict[str, Any],
+) -> CombinedVocabulary:
+    """Fold the loaded graph's own labels and relationship types into a vocabulary.
+
+    The IFC scan sees products; the loaded Neo4j graph sees more. On Building 15
+    the scan yields 23 entities and 4 relationship types while the graph holds 76
+    labels (``IfcMaterial``, the IFC supertype chain, type objects) and 8
+    relationship types.
+
+    Anything missing here is undecodable under CYPHER_STRICT, invisible to the
+    prompt under CYPHER_SOFT, and counted as a schema violation by SCR — which is
+    how ``BOUNDED_BY`` came to be absent from all three. Both the bundle builder
+    and the API must call this so client-side decoding and server-side scoring
+    agree on one vocabulary.
+
+    Mutates and returns ``vocab``.
+    """
+    graph_rels = set(graph_stats.get("relationships") or {})
+    new_rels = graph_rels - set(vocab.all_relations)
+    vocab.all_relations |= graph_rels
+
+    graph_labels = graph_stats.get("labels") or {}
+    new_labels = [lbl for lbl in graph_labels if lbl and lbl not in vocab.entities]
+    for label in new_labels:
+        vocab.entities[label] = EntityVocabulary(
+            name=label,
+            count=graph_labels[label],
+            from_ids=False,
+            from_ifc=False,
+        )
+
+    logger.info(
+        "Merged graph stats into vocabulary: +%d relationship types %s, "
+        "+%d labels (now %d rels, %d entities)",
+        len(new_rels), sorted(new_rels), len(new_labels),
+        len(vocab.all_relations), len(vocab.entities),
+    )
+    return vocab
+
 
 class VocabularyMerger:
     """
