@@ -297,6 +297,13 @@ def collect_graph_stats(driver) -> Dict[str, Any]:
     stats["relationship_signatures"] = collect_relationship_signatures(
         driver, stats["labels"]
     )
+    with driver.session() as session:
+        stats["property_keys"] = sorted(
+            r["propertyKey"]
+            for r in session.run(
+                "CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"
+            )
+        )
     return stats
 
 

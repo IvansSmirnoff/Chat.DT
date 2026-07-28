@@ -264,12 +264,36 @@ def merge_graph_stats_into_vocabulary(
         tuple(sig) for sig in (graph_stats.get("relationship_signatures") or [])
     ]
 
+    # Drop properties the loader never writes. The IFC scanner reads standard
+    # IFC *attributes* (LongName, PredefinedType, Tag) that the ETL does not
+    # carry into Neo4j, so they enter the vocabulary, pass SCR, reach the
+    # prompt, and are decodable — while every query using them returns nulls.
+    # `LongName` is what the model chose for the room name on Building 15,
+    # in both settings, in every run. One db.propertyKeys() call settles it.
+    graph_keys = set(graph_stats.get("property_keys") or ())
+    dropped: List[str] = []
+    if graph_keys:
+        dropped = sorted(set(vocab.all_properties) - graph_keys)
+        for name in dropped:
+            vocab.all_properties.pop(name, None)
+            vocab.strict_properties.discard(name)
+            vocab.open_properties.discard(name)
+        for entity in vocab.entities.values():
+            for name in dropped:
+                entity.properties.pop(name, None)
+        if dropped:
+            logger.info(
+                "Dropped %d vocabulary properties absent from the graph: %s",
+                len(dropped), dropped,
+            )
+
     logger.info(
         "Merged graph stats into vocabulary: +%d relationship types %s, "
-        "+%d labels, %d relationship signatures (now %d rels, %d entities)",
+        "+%d labels, %d relationship signatures, -%d unwritten properties "
+        "(now %d rels, %d entities, %d properties)",
         len(new_rels), sorted(new_rels), len(new_labels),
-        len(vocab.relationship_signatures),
-        len(vocab.all_relations), len(vocab.entities),
+        len(vocab.relationship_signatures), len(dropped),
+        len(vocab.all_relations), len(vocab.entities), len(vocab.all_properties),
     )
     return vocab
 

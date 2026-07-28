@@ -57,6 +57,10 @@ Your task is to convert natural language questions into valid Cypher queries tha
 7. **Only traverse the exact patterns listed under RELATIONSHIPS**: source label,
    relationship type and target label must all match one listed line. Any other
    combination is not reported as an error — it silently returns no rows
+8. **For "which X have no Y", never MATCH the Y**: match X alone and exclude the
+   pattern in WHERE, e.g. `MATCH (s:IfcSpace) WHERE NOT (s)-[:BOUNDED_BY]->(:IfcWindow)`.
+   Matching `(s)-[:BOUNDED_BY]->(w:IfcWindow)` and *then* excluding the same pattern
+   is self-contradictory and always returns nothing
 
 ## Constraint Rules
 
