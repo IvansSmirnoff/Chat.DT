@@ -155,6 +155,10 @@ class CombinedVocabulary:
     strict_properties: Set[str] = field(default_factory=set)
     open_properties: Set[str] = field(default_factory=set)
     all_relations: Set[str] = field(default_factory=set)
+    # (source_label, rel_type, target_label) triples read from the loaded graph.
+    # Relationship *names* alone are not enough to write a correct traversal —
+    # see merge_graph_stats_into_vocabulary.
+    relationship_signatures: List[Tuple[str, str, str]] = field(default_factory=list)
     ids_schema: Optional[IDSSchema] = None
     ifc_schema: Optional[IFCModelSchema] = None
     
@@ -211,6 +215,9 @@ class CombinedVocabulary:
             strict_properties=set(data.get("strict_properties") or []),
             open_properties=set(data.get("open_properties") or []),
             all_relations=set(data.get("all_relations") or []),
+            relationship_signatures=[
+                tuple(sig) for sig in (data.get("relationship_signatures") or [])
+            ],
             ids_schema=ids_schema,
             ifc_schema=None,
         )
@@ -253,10 +260,15 @@ def merge_graph_stats_into_vocabulary(
             from_ifc=False,
         )
 
+    vocab.relationship_signatures = [
+        tuple(sig) for sig in (graph_stats.get("relationship_signatures") or [])
+    ]
+
     logger.info(
         "Merged graph stats into vocabulary: +%d relationship types %s, "
-        "+%d labels (now %d rels, %d entities)",
+        "+%d labels, %d relationship signatures (now %d rels, %d entities)",
         len(new_rels), sorted(new_rels), len(new_labels),
+        len(vocab.relationship_signatures),
         len(vocab.all_relations), len(vocab.entities),
     )
     return vocab
@@ -598,8 +610,26 @@ def get_system_schema_string(vocab: CombinedVocabulary) -> str:
         if len(open_props) > 15:
             lines.append(f"  ... and {len(open_props) - 15} more properties")
     
-    # Relationships
-    if vocab.all_relations:
+    # Relationships. Prefer typed signatures: a bare list of names does not say
+    # which relationship connects which labels, and the model guesses wrong —
+    # CONTAINS reaches doors from a storey but spaces need DECOMPOSES, and every
+    # "per floor" query written with CONTAINS returns zero rows.
+    if vocab.relationship_signatures:
+        lines.extend([
+            "",
+            "=" * 50,
+            "RELATIONSHIPS (exact patterns that exist in the graph —",
+            "any combination not listed here returns no rows):",
+            "=" * 50,
+        ])
+        by_rel: Dict[str, List[Tuple[str, str]]] = {}
+        for src, rel, dst in vocab.relationship_signatures:
+            by_rel.setdefault(rel, []).append((src, dst))
+        for rel in sorted(by_rel):
+            lines.append(f"  {rel}:")
+            for src, dst in sorted(by_rel[rel]):
+                lines.append(f"    ({src})-[:{rel}]->({dst})")
+    elif vocab.all_relations:
         lines.extend([
             "",
             "=" * 50,

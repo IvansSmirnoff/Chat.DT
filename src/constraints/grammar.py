@@ -285,9 +285,16 @@ def build_cypher_regex(
 
     pattern_predicate = None
     if config.allow_pattern_predicates and config.allow_relationships:
+        # The target must be ANONYMOUS. Cypher rejects a pattern predicate that
+        # introduces a new variable:
+        #   WHERE (w)-[:HAS_OPENING]->(d:IfcDoor)
+        #   -> "PatternExpressions are not allowed to introduce new variables: 'd'"
+        # The decoder produced exactly that on the first Building 15 run, so the
+        # general node_pattern (which permits `(d:IfcDoor)`) cannot be reused here.
+        anon_node = f"\\((?::{entity_alt})?\\)"
         pattern_predicate = (
             f"(?:{_keyword('NOT', ci)}{WS_REQ})?"
-            f"\\({IDENT}\\){WS}{rel_pattern}{WS}{node_pattern}"
+            f"\\({IDENT}\\){WS}{rel_pattern}{WS}{anon_node}"
         )
 
     # DISTINCT is legal in two places: after RETURN, and as the first token

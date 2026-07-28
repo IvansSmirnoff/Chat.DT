@@ -50,6 +50,13 @@ Your task is to convert natural language questions into valid Cypher queries tha
 3. **RETURN clause**: Return the node `n`, specific properties `n.PropertyName`, or aggregations `count(n)`
 4. **Case sensitivity**: Entity labels are case-sensitive (use exactly as listed)
 5. **Property values**: Use single quotes for strings, no quotes for booleans and numbers
+6. **Do not add a hop you do not need**: if the answer is already a property of the
+   node, filter or return it directly. A room's floor, number and name are
+   properties of the `IfcSpace` itself, so reaching for the storey node is both
+   unnecessary and likely to pick the wrong relationship
+7. **Only traverse the exact patterns listed under RELATIONSHIPS**: source label,
+   relationship type and target label must all match one listed line. Any other
+   combination is not reported as an error — it silently returns no rows
 
 ## Constraint Rules
 

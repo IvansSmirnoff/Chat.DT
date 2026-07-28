@@ -294,5 +294,55 @@ def collect_graph_stats(driver) -> Dict[str, Any]:
             "MATCH ()-[r]->() RETURN count(r) AS c"
         ).single()["c"]
 
+    stats["relationship_signatures"] = collect_relationship_signatures(
+        driver, stats["labels"]
+    )
     return stats
+
+
+def collect_relationship_signatures(
+    driver, label_counts: Dict[str, int]
+) -> List[List[str]]:
+    """Return distinct ``(source_label, rel_type, target_label)`` triples.
+
+    A bare list of relationship *names* is not enough for a model to write a
+    correct traversal. On Building 15 the graph has both
+    ``(IfcBuildingStorey)-[:CONTAINS]->(IfcDoor)`` and
+    ``(IfcBuildingStorey)-[:DECOMPOSES]->(IfcSpace)`` — but no
+    ``(IfcBuildingStorey)-[:CONTAINS]->(IfcSpace)``. Given only the names, the
+    model generalised CONTAINS to spaces and every "per floor" query returned
+    zero rows.
+
+    Nodes carry the whole IFC supertype chain as labels, so the most specific
+    label is approximated by the rarest one — ``IfcSpace`` (189) rather than
+    ``IfcProduct`` (5,949).
+    """
+    def most_specific(labels: List[str]) -> Optional[str]:
+        known = [l for l in labels if l in label_counts] or list(labels)
+        if not known:
+            return None
+        return min(known, key=lambda l: label_counts.get(l, 1 << 30))
+
+    signatures = set()
+    with driver.session() as session:
+        rel_types = [
+            r["relationshipType"]
+            for r in session.run(
+                "CALL db.relationshipTypes() YIELD relationshipType "
+                "RETURN relationshipType"
+            )
+        ]
+        for rtype in rel_types:
+            result = session.run(
+                f"MATCH (a)-[r:`{rtype}`]->(b) "
+                "RETURN DISTINCT labels(a) AS la, labels(b) AS lb"
+            )
+            for record in result:
+                src = most_specific(record["la"])
+                dst = most_specific(record["lb"])
+                if src and dst:
+                    signatures.add((src, rtype, dst))
+
+    logger.info("Collected %d relationship signatures", len(signatures))
+    return [list(s) for s in sorted(signatures)]
 

@@ -252,6 +252,20 @@ class _TemplateContext:
     def has_relationship(self, rel: str) -> bool:
         return rel in self.relationships
 
+    def relation_between(self, src: str, dst: str) -> Optional[str]:
+        """Which relationship actually connects ``src`` to ``dst``, if any.
+
+        Examples must never assert a traversal the graph does not have. A
+        template that hardcoded ``(IfcBuildingStorey)-[:CONTAINS]->(...)``
+        taught the model to reach spaces that way; on Building 15 spaces hang
+        off the storey by DECOMPOSES, so every query it inspired returned
+        nothing.
+        """
+        for s, rel, d in self.vocab.relationship_signatures:
+            if s == src and d == dst:
+                return rel
+        return None
+
 
 def _humanise(label: str) -> str:
     """``IfcBuildingStorey`` -> ``building storey``."""
@@ -336,26 +350,52 @@ def _t_filter_by_categorical(ctx: _TemplateContext) -> Optional[Dict[str, str]]:
 
 
 def _t_storey_contains(ctx: _TemplateContext) -> Optional[Dict[str, str]]:
+    """Storey -> element. Uses whichever relationship the graph really has."""
     storey_value = ctx.first_enum("IfcBuildingStorey", "Name")
     if storey_value is None:
         return None
-    if not ctx.has_relationship("CONTAINS"):
-        return None
-    # Pick a contained entity that exists.
-    for child in ("IfcDoor", "IfcWindow", "IfcSpace", "IfcWall"):
-        if ctx.entity_with_count(child):
-            return {
-                "question": (
-                    f"How many {_humanise(child)} elements are on "
-                    f"'{storey_value}'?"
-                ),
-                "cypher": (
-                    f"MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(d:{child}) "
-                    f"WHERE s.Name = '{storey_value}' "
-                    f"RETURN count(d)"
-                ),
-            }
+    for child in ("IfcDoor", "IfcWindow", "IfcWall"):
+        if not ctx.entity_with_count(child):
+            continue
+        rel = ctx.relation_between("IfcBuildingStorey", child)
+        if rel is None:
+            continue
+        return {
+            "question": (
+                f"How many {_humanise(child)} elements are on "
+                f"'{storey_value}'?"
+            ),
+            "cypher": (
+                f"MATCH (s:IfcBuildingStorey)-[:{rel}]->(d:{child}) "
+                f"WHERE s.Name = '{storey_value}' "
+                f"RETURN count(d)"
+            ),
+        }
     return None
+
+
+def _t_storey_spaces(ctx: _TemplateContext) -> Optional[Dict[str, str]]:
+    """Storey -> space, kept separate from storey -> element on purpose.
+
+    Spatial containment and element containment use *different* relationships
+    in this ETL (DECOMPOSES vs CONTAINS). One example covering only elements
+    let the model assume a single rule, which is the error that made every
+    per-floor query on Building 15 return zero rows.
+    """
+    storey_value = ctx.first_enum("IfcBuildingStorey", "Name")
+    if storey_value is None or not ctx.entity_with_count("IfcSpace"):
+        return None
+    rel = ctx.relation_between("IfcBuildingStorey", "IfcSpace")
+    if rel is None:
+        return None
+    return {
+        "question": f"How many rooms are on '{storey_value}'?",
+        "cypher": (
+            f"MATCH (s:IfcBuildingStorey)-[:{rel}]->(sp:IfcSpace) "
+            f"WHERE s.Name = '{storey_value}' "
+            f"RETURN count(sp)"
+        ),
+    }
 
 
 def _t_aggregate_numeric(ctx: _TemplateContext) -> Optional[Dict[str, str]]:
@@ -398,6 +438,7 @@ _TEMPLATES: List[Callable[[_TemplateContext], Optional[Dict[str, str]]]] = [
     _t_count_by_label,
     _t_filter_by_categorical,
     _t_storey_contains,
+    _t_storey_spaces,
     _t_aggregate_numeric,
     _t_top_one_desc,
 ]
