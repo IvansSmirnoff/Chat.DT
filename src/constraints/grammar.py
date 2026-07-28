@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional, Set, TYPE_CHECKING
+from typing import Dict, Optional, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .vocabulary_merger import CombinedVocabulary
@@ -120,6 +120,10 @@ class CypherGrammar:
     entities: Set[str]
     properties: Set[str]
     relationships: Set[str] = field(default_factory=lambda: set(DEFAULT_RELATIONSHIPS))
+    # property name -> allowed literal values, from the IDS xs:enumeration.
+    # Comparisons against these properties are bound to the listed values, so
+    # an invented value is not merely discouraged but undecodable.
+    value_enumerations: Dict[str, Set[str]] = field(default_factory=dict)
     max_where_clauses: int = 4  # Increased to support complex queries like test_set
     max_return_items: int = 8   # Columns allowed in RETURN (dup-column guard)
     allow_aggregations: bool = True
@@ -227,6 +231,23 @@ def build_cypher_regex(
     # Build entity and property alternations
     entity_alt = _build_alternation(entities)
     property_alt = _build_alternation(properties)
+
+    # IDS-enumerated properties are handled by dedicated branches below, where
+    # the literal is bound to the declared value set. They must be REMOVED from
+    # every free-value position (comparison, CONTAINS) — leaving them in the
+    # generic alternation keeps a path that accepts any string, which makes the
+    # binding decorative. They stay available in RETURN / ORDER BY / IS NULL,
+    # none of which carry a literal.
+    enumerations = {
+        prop: vals
+        for prop, vals in (config.value_enumerations or {}).items()
+        if prop in properties and vals
+    }
+    open_property_alt = (
+        _build_alternation(set(properties) - set(enumerations))
+        if enumerations
+        else property_alt
+    )
     rel_alt = (
         _build_alternation(config.relationships)
         if config.relationships
@@ -249,20 +270,31 @@ def build_cypher_regex(
     # so a name introduced in MATCH is drawn from the same language as its
     # later uses in WHERE / RETURN / ORDER BY.
     # Build property access pattern: n.Property or toInteger(n.Property)
-    property_access = f"(?:{CONVERSION_FUNCTIONS}\\({WS}{IDENT}\\.{property_alt}{WS}\\)|{IDENT}\\.{property_alt})"
+    property_access = f"(?:{CONVERSION_FUNCTIONS}\\({WS}{IDENT}\\.{open_property_alt}{WS}\\)|{IDENT}\\.{open_property_alt})"
 
     # Build different condition types:
+    # 0. Enumerated comparison: n.Prop = 'one of the IDS-declared values'.
+    #    Only = and <> — CONTAINS against a closed enumeration is meaningless
+    #    and would reintroduce a free literal.
+    enumerated_comparisons = []
+    for prop in sorted(enumerations):
+        literal_alt = _build_alternation({f"'{v}'" for v in enumerations[prop]})
+        enumerated_comparisons.append(
+            f"{IDENT}\\.{re.escape(prop)}{WS}(?:=|<>|!=){WS}{literal_alt}"
+        )
+
     # 1. Basic comparison: n.Property = 'value' or n.Property > 100 or toInteger(n.Property) >= 20
     basic_comparison = f"{property_access}{WS}{COMPARISON_OP_BASIC}{WS}{value_pattern}"
 
     # 2. String CONTAINS: n.Property CONTAINS 'value' or m.Name CONTAINS 'Concrete'
-    string_contains = f"{IDENT}\\.{property_alt}{WS_REQ}{STRING_OP}{WS_REQ}{STRING_LITERAL}"
+    string_contains = f"{IDENT}\\.{open_property_alt}{WS_REQ}{STRING_OP}{WS_REQ}{STRING_LITERAL}"
 
-    # 3. IS NULL / IS NOT NULL: n.Property IS NOT NULL
+    # 3. IS NULL / IS NOT NULL: n.Property IS NOT NULL — no literal, so the full
+    #    property set is safe here.
     is_null_check = f"{IDENT}\\.{property_alt}{WS_REQ}{_keyword('IS', ci)}(?:{WS_REQ}{_keyword('NOT', ci)})?{WS_REQ}{_keyword('NULL', ci)}"
 
     # 4. NOT with string contains: NOT n.Property CONTAINS 'value' or NOT m.Name CONTAINS 'Concrete'
-    not_string_contains = f"{_keyword('NOT', ci)}{WS_REQ}{IDENT}\\.{property_alt}{WS_REQ}{STRING_OP}{WS_REQ}{STRING_LITERAL}"
+    not_string_contains = f"{_keyword('NOT', ci)}{WS_REQ}{IDENT}\\.{open_property_alt}{WS_REQ}{STRING_OP}{WS_REQ}{STRING_LITERAL}"
 
     # 5. Pattern predicate: (s)-[:BOUNDED_BY]->(:IfcWindow), optionally negated.
     #    This is existence / non-existence of a path, and it is the one
@@ -278,7 +310,9 @@ def build_cypher_regex(
     #    "offices with no window" keep
     #        WHERE s.Cat = 'UFFICI' AND NOT (s)-[:BOUNDED_BY]->(:IfcWindow)
     #    under that cap. At most one predicate; no gold query needs two.
-    conditions = [not_string_contains, basic_comparison, string_contains, is_null_check]
+    conditions = enumerated_comparisons + [
+        not_string_contains, basic_comparison, string_contains, is_null_check,
+    ]
 
     # Combined single condition (property-level comparisons only)
     single_condition = f"(?:{'|'.join(conditions)})"
@@ -465,6 +499,22 @@ def build_cypher_regex_from_vocabulary(
             sorted(relationships),
         )
 
+    # Value enumerations come from the IDS xs:restriction ONLY, never from
+    # values sampled out of the graph. Binding the decoder to IDS-declared
+    # values is the claim under test ("the information-delivery specification
+    # constrains generation"); binding it to whatever happens to be in the data
+    # is a different, weaker claim that shades into encoding the answers.
+    enumerations = {
+        name: set(prop.allowed_values)
+        for name, prop in vocabulary.all_properties.items()
+        if prop.is_strict()
+    }
+    if enumerations:
+        logger.info(
+            "IDS value binding active on %d properties: %s",
+            len(enumerations), sorted(enumerations),
+        )
+
     if config is None:
         # FSM-safe profile. max_where_clauses is the load-bearing cap: it is
         # what keeps outlines-core from raising "Failed to build DFA number of
@@ -490,11 +540,15 @@ def build_cypher_regex_from_vocabulary(
             entities=entities,
             properties=properties,
             relationships=relationships,
+            value_enumerations=enumerations,
             max_where_clauses=1,
             max_return_items=3,
         )
-    elif not config.relationships:
-        config.relationships = relationships
+    else:
+        if not config.relationships:
+            config.relationships = relationships
+        if not config.value_enumerations:
+            config.value_enumerations = enumerations
 
     logger.info(
         f"Building regex from combined vocabulary: "
