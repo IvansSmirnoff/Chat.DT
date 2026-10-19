@@ -341,6 +341,27 @@ IFC File (model.ifc)
 
 ### Phase 2: Vocabulary Merging (Hybrid Schema)
 
+> **Updated 2026-07-28 — a third input.** IDS + IFC is not enough: the IFC scan sees
+> products, the *loaded graph* sees more. On Building 15 the scan yields 23 entities
+> and 4 relationship types while Neo4j holds 76 labels and 8 relationship types.
+> `merge_graph_stats_into_vocabulary()` folds in the graph's labels, relationship
+> types and **relationship signatures**, and drops properties the loader never writes.
+> Both `scripts/build_bundle.py` and the API call it, so client-side decoding and
+> server-side SCR scoring agree on one vocabulary.
+>
+> - **Signatures, not names.** A bare list of relationship names does not say which
+>   relationship connects which labels. The graph holds
+>   `(IfcBuildingStorey)-[:CONTAINS]->(IfcDoor)` and
+>   `(IfcBuildingStorey)-[:DECOMPOSES]->(IfcSpace)` but **not**
+>   `(IfcBuildingStorey)-[:CONTAINS]->(IfcSpace)`; given only names the model
+>   generalised CONTAINS to spaces and every per-floor query silently returned zero
+>   rows. All 90 `(src)-[:REL]->(dst)` triples now reach the prompt. This was the
+>   single largest accuracy lever measured.
+> - **Unwritten properties are dropped.** `LongName`, `PredefinedType` and `Tag` are
+>   IFC *attributes* the scanner reads and the ETL never writes; they entered the
+>   vocabulary, passed SCR, reached the prompt and were decodable while returning
+>   nulls. Filtered against `db.propertyKeys()` — one call, no scans.
+
 **File:** `src/constraints/vocabulary_merger.py`
 
 The vocabulary merger creates a **Super-Schema** by combining IDS constraints (enforced) with IFC vocabulary (available):
@@ -428,6 +449,28 @@ The vocabulary merger creates a **Super-Schema** by combining IDS constraints (e
 ### Phase 3: Grammar Construction (Regex Patterns)
 
 **File:** `src/constraints/grammar.py`
+
+> **Updated 2026-07-28.** Four behaviours below are newer than the diagram that
+> follows; see `tasks/ch9_bim_queries_findings.md` for the measurements behind them.
+>
+> - **Every quantifier is bounded.** An unbounded `*` or `+` is an FSM self-loop: the
+>   decoder can sit in one state and burn the whole `max_new_tokens` budget, returning
+>   a truncated query. `WS`, `WS_REQ`, `STRING_LITERAL`, `NUMBER_LITERAL` and the
+>   identifier are all capped.
+> - **One identifier for bindings and references** (`IDENT = [a-z][a-z0-9]{0,2}`). The
+>   earlier split — unbounded for bindings, single-letter for references — let
+>   `MATCH (space:IfcSpace) WHERE s.X` full-match the regex and then fail in Neo4j.
+> - **IDS value binding.** Comparisons against IDS-enumerated properties are bound to
+>   the declared values, and those properties are removed from every free-value
+>   position. Values come from the IDS `xs:restriction` **only**, never from values
+>   sampled out of the graph. Leaving them in the generic alternation would keep an
+>   any-string path and make the binding decorative.
+> - **FSM-safe profile** (`max_where_clauses=1`, `max_return_items=3`, pattern
+>   predicate hoisted out of the WHERE repetition). Without it `outlines-core` raises
+>   `Failed to build DFA number of DFA states exceeds limit of 2147483647` on a
+>   real vocabulary. `max_where_clauses` is the load-bearing cap — 4 fails in every
+>   configuration measured, ≤2 succeeds. Reproduce with `outlines-core` plus the HF
+>   tokenizer; no GPU or model weights needed.
 
 The grammar generator builds **regex patterns** that constrain LLM output to valid Cypher syntax:
 
@@ -760,6 +803,23 @@ We use three primary metrics adapted for each output type:
 **Granular Analysis:**
 - **By Difficulty:** EA aggregated by Easy/Medium/Hard query complexity
 - **By Category:** EA aggregated by query type (basic_query, property_filter, relationship)
+
+**Two limitations to declare when reporting these (added 2026-07-28):**
+
+- **EA is projection-sensitive.** It compares the values a query *returns*, so a
+  prediction that identifies exactly the right entities but projects a different
+  column scores 0. On the Building 15 demo, "which offices have no window" returned
+  the identical ten rooms as the gold and scored 0 because the gold projected
+  `s.Numero, s.Livello` and the model projected `s.Name` — which holds the same
+  values. Consequently **any single gold projection favours whichever arm happens to
+  project the same columns**, so EA alone cannot fairly compare two settings on a
+  small set. Use `scripts/adjudicate.py`, which re-executes both queries and applies
+  a pre-declared, projection-independent rule (equal row count, and every gold value
+  present among the prediction's values), and report the queries verbatim.
+- **SCR validates property names globally, not per label.** `d.CS_MATERIALE_PANNELLATURA`
+  scores compliant even though no door carries that property. Closing this needs
+  entity-scoped properties, an entity × property product that will not compile into
+  an FSM at realistic vocabulary sizes.
 
 ### 4.2 Gold Standard
 
