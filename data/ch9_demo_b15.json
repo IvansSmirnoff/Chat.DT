@@ -19,7 +19,8 @@
   },
   {
     "question": "Which offices have no window?",
-    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'UFFICI' AND NOT (s)-[:BOUNDED_BY]->(:IfcWindow) RETURN s.Numero, s.Livello",
+    "gold_cypher": "MATCH (s:IfcSpace) WHERE s.SBSm_CATEGORIA_DESCRIZIONE = 'UFFICI' AND NOT (s)-[:BOUNDED_BY]->(:IfcWindow) RETURN s.Numero",
+    "gold_note": "Amended 2026-07-28 after run 4: the gold previously projected s.Numero, s.Livello. The question asks only which offices, so the Livello column over-answered it and made a correct prediction score 0 on EA. The floor breakdown is reported in the chapter prose, not required of the query. Amendment recorded because it was made after seeing predictions.",
     "category": "relationship",
     "difficulty": "Hard"
   },

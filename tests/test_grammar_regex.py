@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from src.constraints.grammar import build_cypher_regex
+from src.constraints.grammar import CypherGrammar, build_cypher_regex
 
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -88,6 +88,11 @@ def bundle_regex() -> str:
     from src.constraints.grammar import build_cypher_regex_from_vocabulary
 
     return build_cypher_regex_from_vocabulary(_load_bundle_vocabulary())
+
+
+@pytest.fixture(scope="module")
+def bundle_vocabulary():
+    return _load_bundle_vocabulary()
 
 
 @requires_bundle
@@ -213,9 +218,111 @@ def test_regex_allows_negated_pattern_predicate():
     assert re.fullmatch(regex, good) is not None
 
 
+# --- IDS value binding --------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def bound_regex() -> str:
+    """Grammar with an IDS-style enumeration on FireRating."""
+    return build_cypher_regex(
+        ENTITIES,
+        PROPERTIES,
+        config=CypherGrammar(
+            entities=ENTITIES,
+            properties=PROPERTIES,
+            value_enumerations={"FireRating": {"EI30", "EI60", "EI90"}},
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "query,allowed",
+    [
+        ("MATCH (n:IfcWall) WHERE n.FireRating = 'EI60' RETURN n", True),
+        ("MATCH (n:IfcWall) WHERE n.FireRating <> 'EI30' RETURN n", True),
+        # Invented value — the whole point of binding.
+        ("MATCH (n:IfcWall) WHERE n.FireRating = 'EI-60' RETURN n", False),
+        ("MATCH (n:IfcWall) WHERE n.FireRating = 'ei60' RETURN n", False),
+        # CONTAINS would smuggle a free literal back in against a closed set.
+        ("MATCH (n:IfcWall) WHERE n.FireRating CONTAINS 'EI' RETURN n", False),
+        # Unenumerated properties keep free values.
+        ("MATCH (n:IfcWall) WHERE n.Name = 'whatever' RETURN n", True),
+        # Positions that carry no literal stay open to enumerated properties.
+        ("MATCH (n:IfcWall) WHERE n.FireRating IS NOT NULL RETURN n.FireRating", True),
+        ("MATCH (n:IfcWall) RETURN n.FireRating ORDER BY n.FireRating DESC", True),
+    ],
+)
+def test_ids_value_binding(bound_regex, query, allowed):
+    assert (re.fullmatch(bound_regex, query) is not None) is allowed, query
+
+
+@requires_bundle
+def test_bundle_binds_the_ids_enumerated_properties(bundle_regex):
+    """The four IDS-enumerated Building 15 properties must be value-bound."""
+    good = "MATCH (d:IfcDoor) WHERE d.PBSa_DESCRIZIONE = 'Porta, Portafinestra REI/EI' RETURN count(d)"
+    # The value the model invented on the first Building 15 run.
+    bad = "MATCH (d:IfcDoor) WHERE d.PBSa_DESCRIZIONE = 'MAT_TEM_Fiamme' RETURN count(d)"
+    assert re.fullmatch(bundle_regex, good) is not None
+    assert re.fullmatch(bundle_regex, bad) is None
+
+
 def test_regex_allows_anonymous_and_untyped_nodes(synthetic_regex):
     for good in (
         "MATCH (s:IfcSpace)-[:CONTAINS]->(e) RETURN count(e)",
         "MATCH (s:IfcSpace)-[:CONTAINS]->(:IfcWindow) RETURN count(s)",
     ):
         assert re.fullmatch(synthetic_regex, good) is not None, good
+
+
+# ---------------------------------------------------------------------------
+# FSM budget guard
+# ---------------------------------------------------------------------------
+#
+# The DFA the regex compiles to is the scarce resource, not the regex itself:
+# outlines-core fails outright once the state count exceeds its limit, and the
+# measured table at grammar.py:519-538 shows the shipped caps
+# (max_where_clauses=1, max_return_items=3) sitting at 31,892 states / 868 MB
+# for a 230-property vocabulary. The property alternation is duplicated about
+# eight times across the pattern, so vocabulary growth is the thing that pushes
+# it over.
+#
+# outlines is not installed in the workbench container (it lives in the Colab
+# GPU runtime), so the real compile cannot run here. These guard the inputs
+# instead: if a change inflates the vocabulary, this fails in seconds rather
+# than after an eleven-minute DFA build on a GPU.
+
+MAX_VOCABULARY_PROPERTIES = 320
+MAX_VOCABULARY_ENTITIES = 110
+MAX_REGEX_CHARS = 75_000
+
+
+@requires_bundle
+def test_vocabulary_stays_within_the_fsm_budget(bundle_vocabulary):
+    properties = len(bundle_vocabulary.all_properties)
+    entities = len(bundle_vocabulary.entities)
+    assert properties <= MAX_VOCABULARY_PROPERTIES, (
+        f"{properties} properties in the vocabulary; the measured DFA budget was "
+        f"established at 230. Do not raise this cap without re-running the "
+        f"outlines compile on a GPU runtime and updating grammar.py:519-538."
+    )
+    assert entities <= MAX_VOCABULARY_ENTITIES, f"{entities} entities in the vocabulary"
+
+
+@requires_bundle
+def test_regex_size_stays_within_the_fsm_budget(bundle_regex):
+    assert len(bundle_regex) <= MAX_REGEX_CHARS, (
+        f"regex is {len(bundle_regex)} chars; a DFA compile at this size has not "
+        f"been measured"
+    )
+
+
+@requires_bundle
+def test_graph_sourced_relationships_reach_the_grammar(bundle_regex, bundle_vocabulary):
+    """The loader's newer edge types must be decodable, not just present.
+
+    HAS_MATERIAL_LAYER is the one that matters for material-layer questions:
+    without it in the grammar, layer thickness is undecodable under STRICT even
+    though the graph carries it.
+    """
+    assert "HAS_MATERIAL_LAYER" in bundle_vocabulary.all_relations
+    assert "HAS_MATERIAL_LAYER" in bundle_regex

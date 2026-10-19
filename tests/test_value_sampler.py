@@ -88,13 +88,20 @@ class _FakeDriver:
         return _FakeResult([])
 
 
-def _build_vocab(properties: Dict[str, Dict[str, PropertyType]]) -> CombinedVocabulary:
+def _build_vocab(
+    properties: Dict[str, Dict[str, PropertyType]],
+    signatures: Optional[List[tuple]] = None,
+) -> CombinedVocabulary:
     """Build a minimal CombinedVocabulary for sampler tests.
 
     ``properties`` maps entity name -> {property_name: type}. Only structure
-    needed by the sampler is populated.
+    needed by the sampler is populated. ``signatures`` are
+    ``(src_label, rel_type, dst_label)`` triples; relationship templates emit
+    nothing without them, by design — an example must never assert a traversal
+    the graph does not have.
     """
     vocab = CombinedVocabulary()
+    vocab.relationship_signatures = list(signatures or [])
     for entity_name, props in properties.items():
         entity = EntityVocabulary(name=entity_name, from_ifc=True, count=1)
         for prop_name, ptype in props.items():
@@ -255,10 +262,13 @@ def _smoke_ok(cypher: str) -> bool:
 
 
 def test_few_shots_use_storey_value_when_available():
-    vocab = _build_vocab({
-        "IfcBuildingStorey": {"Name": PropertyType.STRING},
-        "IfcDoor": {"Name": PropertyType.STRING},
-    })
+    vocab = _build_vocab(
+        {
+            "IfcBuildingStorey": {"Name": PropertyType.STRING},
+            "IfcDoor": {"Name": PropertyType.STRING},
+        },
+        signatures=[("IfcBuildingStorey", "CONTAINS", "IfcDoor")],
+    )
     enumerations = {"IfcBuildingStorey.Name": ["Level 2"]}
 
     label_counts = {"IfcBuildingStorey": 3, "IfcDoor": 50}
@@ -276,9 +286,61 @@ def test_few_shots_use_storey_value_when_available():
         ex for ex in examples if "IfcBuildingStorey" in ex["cypher"] and "Level 2" in ex["cypher"]
     ]
     assert storey_examples, f"Expected a storey-relationship example, got {examples}"
-    # Single-letter variable bindings (REF_VARIABLE FSM trap).
+    # Short variable bindings, reused verbatim (grammar's IDENT is 1-3 chars).
     assert "(s:IfcBuildingStorey)" in storey_examples[0]["cypher"]
     assert "(d:IfcDoor)" in storey_examples[0]["cypher"]
+
+
+def test_few_shots_use_the_relationship_the_graph_actually_has():
+    """Spaces hang off a storey by DECOMPOSES, elements by CONTAINS.
+
+    An example that asserts CONTAINS for spaces teaches the model a traversal
+    that returns zero rows — the exact failure of the first Building 15 run.
+    """
+    vocab = _build_vocab(
+        {
+            "IfcBuildingStorey": {"Name": PropertyType.STRING},
+            "IfcSpace": {"Name": PropertyType.STRING},
+        },
+        signatures=[("IfcBuildingStorey", "DECOMPOSES", "IfcSpace")],
+    )
+    enumerations = {"IfcBuildingStorey.Name": ["Level 2"]}
+
+    regex_responses: List[tuple] = []
+    regex_responses += _label_responses({"IfcBuildingStorey": 3, "IfcSpace": 40})
+    regex_responses += _rel_responses(["CONTAINS", "DECOMPOSES"])
+    regex_responses.append((lambda q: True, []))
+
+    examples = generate_few_shot_examples(
+        _FakeDriver(regex_responses=regex_responses), vocab, enumerations, n=5
+    )
+    space_examples = [ex for ex in examples if "IfcSpace" in ex["cypher"] and "->" in ex["cypher"]]
+    assert space_examples, f"Expected a storey->space example, got {examples}"
+    cypher = space_examples[0]["cypher"]
+    assert "[:DECOMPOSES]" in cypher, cypher
+    assert "[:CONTAINS]" not in cypher, cypher
+
+
+def test_few_shots_omit_traversals_absent_from_signatures():
+    """No signature -> no relationship example at all. Silence beats a wrong hint."""
+    vocab = _build_vocab(
+        {
+            "IfcBuildingStorey": {"Name": PropertyType.STRING},
+            "IfcSpace": {"Name": PropertyType.STRING},
+        },
+        signatures=[],
+    )
+    enumerations = {"IfcBuildingStorey.Name": ["Level 2"]}
+
+    regex_responses: List[tuple] = []
+    regex_responses += _label_responses({"IfcBuildingStorey": 3, "IfcSpace": 40})
+    regex_responses += _rel_responses(["CONTAINS", "DECOMPOSES"])
+    regex_responses.append((lambda q: True, []))
+
+    examples = generate_few_shot_examples(
+        _FakeDriver(regex_responses=regex_responses), vocab, enumerations, n=5
+    )
+    assert not [ex for ex in examples if "->" in ex["cypher"]], examples
 
 
 def test_few_shots_skip_entities_with_zero_count():
