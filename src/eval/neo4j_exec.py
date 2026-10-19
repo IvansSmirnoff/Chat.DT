@@ -266,6 +266,69 @@ def execute_gold_queries(
     return gold_results
 
 
+INTERNAL_LABEL_PREFIX = "_"
+
+
+def is_internal_label(label: str) -> bool:
+    """Labels starting with ``_`` mark bookkeeping nodes (``:_GraphMeta``).
+
+    They are never part of the model: excluded from graph stats, and therefore
+    from the vocabulary, the grammar, the prompt and SCR.
+    """
+    return label.startswith(INTERNAL_LABEL_PREFIX)
+
+
+def collect_property_keys_in_use(driver) -> List[str]:
+    """Property keys carried by at least one model node or relationship now.
+
+    Not ``db.propertyKeys()``: that lists the token store, which never shrinks.
+    Once a second model has been loaded into the same database (or a dedup pass
+    has removed a key), it still reports every key any earlier graph carried, so
+    the vocabulary filter built on it stops dropping unwritten properties. A
+    scan costs one pass over the graph and answers what is actually there.
+    """
+    with driver.session() as session:
+        node_keys = {
+            r["k"]
+            for r in session.run(
+                f"MATCH (n) WHERE none(l IN labels(n) WHERE l STARTS WITH '{INTERNAL_LABEL_PREFIX}') "
+                "UNWIND keys(n) AS k RETURN DISTINCT k"
+            )
+        }
+        rel_keys = {
+            r["k"]
+            for r in session.run("MATCH ()-[r]->() UNWIND keys(r) AS k RETURN DISTINCT k")
+        }
+    return sorted(node_keys | rel_keys)
+
+
+def collect_label_and_type_counts(driver) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """Node count per model label and edge count per relationship type.
+
+    Internal labels and zero-count labels/types are skipped: after one model is
+    replaced by another, ``db.labels()`` and ``db.relationshipTypes()`` may still
+    name tokens the current graph does not use.
+    """
+    labels: Dict[str, int] = {}
+    rel_types: Dict[str, int] = {}
+    with driver.session() as session:
+        for record in session.run("CALL db.labels() YIELD label RETURN label"):
+            label = record["label"]
+            if is_internal_label(label):
+                continue
+            count = session.run(f"MATCH (n:`{label}`) RETURN count(n) AS c").single()["c"]
+            if count:
+                labels[label] = count
+        for record in session.run(
+            "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
+        ):
+            rtype = record["relationshipType"]
+            count = session.run(f"MATCH ()-[r:`{rtype}`]->() RETURN count(r) AS c").single()["c"]
+            if count:
+                rel_types[rtype] = count
+    return labels, rel_types
+
+
 def collect_graph_stats(driver) -> Dict[str, Any]:
     """Query Neo4j for node/relationship counts per label and type.
 
@@ -273,23 +336,13 @@ def collect_graph_stats(driver) -> Dict[str, Any]:
     scan sees fewer labels and fewer relationship types. Feed the result to
     ``merge_graph_stats_into_vocabulary`` so grammar, prompt and SCR all agree.
     """
-    stats: Dict[str, Any] = {"labels": {}, "relationships": {}, "totals": {}}
+    labels, rel_types = collect_label_and_type_counts(driver)
+    stats: Dict[str, Any] = {"labels": labels, "relationships": rel_types, "totals": {}}
     with driver.session() as session:
-        label_result = session.run("CALL db.labels() YIELD label RETURN label")
-        for record in label_result:
-            label = record["label"]
-            count = session.run(f"MATCH (n:`{label}`) RETURN count(n) AS c").single()["c"]
-            stats["labels"][label] = count
-
-        rel_result = session.run(
-            "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
-        )
-        for record in rel_result:
-            rtype = record["relationshipType"]
-            count = session.run(f"MATCH ()-[r:`{rtype}`]->() RETURN count(r) AS c").single()["c"]
-            stats["relationships"][rtype] = count
-
-        stats["totals"]["nodes"] = session.run("MATCH (n) RETURN count(n) AS c").single()["c"]
+        stats["totals"]["nodes"] = session.run(
+            f"MATCH (n) WHERE none(l IN labels(n) WHERE l STARTS WITH '{INTERNAL_LABEL_PREFIX}') "
+            "RETURN count(n) AS c"
+        ).single()["c"]
         stats["totals"]["relationships"] = session.run(
             "MATCH ()-[r]->() RETURN count(r) AS c"
         ).single()["c"]
@@ -297,13 +350,7 @@ def collect_graph_stats(driver) -> Dict[str, Any]:
     stats["relationship_signatures"] = collect_relationship_signatures(
         driver, stats["labels"]
     )
-    with driver.session() as session:
-        stats["property_keys"] = sorted(
-            r["propertyKey"]
-            for r in session.run(
-                "CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey"
-            )
-        )
+    stats["property_keys"] = collect_property_keys_in_use(driver)
     return stats
 
 

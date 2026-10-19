@@ -1,4 +1,4 @@
-"""Regression tests on the current Barcelona load in Neo4j.
+"""Regression tests on whatever model is currently loaded in Neo4j.
 
 Read-only sanity checks. Skipped automatically when Neo4j is unreachable
 so the suite still runs on Colab / dev machines without the DB.
@@ -14,10 +14,16 @@ def _count(driver, cypher: str) -> int:
         return s.run(cypher).single()["c"]
 
 
-def test_total_nodes_above_minimum(neo4j_driver):
+def test_graph_is_loaded_without_property_definition_nodes(neo4j_driver):
+    # Model-independent: the database holds whichever IFC-Bench model was
+    # restored last, so an absolute node count (this used to assert > 5,000,
+    # sized for Barcelona) fails on small models. The defect it guarded is
+    # property sets materialised as orphan nodes -- 82.5% of the clinic graph
+    # before the loader fix -- and that is checkable on any model.
     total = _count(neo4j_driver, "MATCH (n) RETURN count(n) AS c")
-    # Plan expects ~11,786 for Barcelona. Allow drift but flag if it halves.
-    assert total > 5_000, f"node count suspiciously low: {total}"
+    assert total > 0, "graph is empty"
+    psets = _count(neo4j_driver, "MATCH (n:IfcPropertyDefinition) RETURN count(n) AS c")
+    assert psets == 0, f"{psets} IfcPropertyDefinition nodes leaked into the graph"
 
 
 def test_contains_edges_present(neo4j_driver):

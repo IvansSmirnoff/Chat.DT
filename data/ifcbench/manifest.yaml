@@ -1,0 +1,695 @@
+dataset:
+  repo: sylvainHellin/ifc-bench
+  commit: 1288fc91655823a36900b7bb75a671d5fa444afd
+selection: test
+totals:
+  models: 31
+  questions_test: 514
+  questions_train: 512
+  bytes: 1340697908
+models:
+- model_id: 4351__arc
+  project: '4351'
+  ifc_model: arc
+  hf_path: projects/4351/arc.ifc
+  sha256: 96077863a6734f574fadc33c77199a9b82222fc4b3f4c0da6612eef9347c99a9
+  size_bytes: 7288853
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 21
+    train: 22
+    excluded: 0
+  categories:
+    aggregation: 18
+    direct_retrieval: 2
+    geometric_spatial: 15
+    incomplete_information: 8
+  paths:
+    ifc: data/ifcbench/raw/projects/4351/arc.ifc
+    testset: data/ifcbench/testsets/4351__arc.jsonl
+    graph_cache: data/ifcbench/cache/4351__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/4351__arc.base.json
+- model_id: ac20__arc
+  project: ac20
+  ifc_model: arc
+  hf_path: projects/ac20/arc.ifc
+  sha256: cfb2124497b25d9a72101075e84be0feb44ff669cb1bd3251be11efebeea945c
+  size_bytes: 10934237
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 28
+    train: 20
+    excluded: 0
+  categories:
+    aggregation: 32
+    direct_retrieval: 6
+    geometric_spatial: 1
+    incomplete_information: 9
+  paths:
+    ifc: data/ifcbench/raw/projects/ac20/arc.ifc
+    testset: data/ifcbench/testsets/ac20__arc.jsonl
+    graph_cache: data/ifcbench/cache/ac20__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/ac20__arc.base.json
+- model_id: dental_clinic__arc
+  project: dental_clinic
+  ifc_model: arc
+  hf_path: projects/dental_clinic/arc.ifc
+  sha256: b90fe57b8aa9329d762a564770e697d4f7357677484e3a78ede4ab6d2163c0c0
+  size_bytes: 13208096
+  schema: IFC2X3
+  preprocessor_version: Autodesk Revit Architecture 2011 - 1.0
+  originating_system: 20100326_1700 (Solibri IFC Optimizer)
+  questions:
+    test: 21
+    train: 12
+    excluded: 0
+  categories:
+    aggregation: 10
+    direct_retrieval: 7
+    geometric_spatial: 4
+    incomplete_information: 12
+  paths:
+    ifc: data/ifcbench/raw/projects/dental_clinic/arc.ifc
+    testset: data/ifcbench/testsets/dental_clinic__arc.jsonl
+    graph_cache: data/ifcbench/cache/dental_clinic__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/dental_clinic__arc.base.json
+- model_id: dental_clinic__str
+  project: dental_clinic
+  ifc_model: str
+  hf_path: projects/dental_clinic/str.ifc
+  sha256: 3351ee3bd19aea39167ba466237fe06de64ea391b0a31b0aacc017c84311e14d
+  size_bytes: 19375987
+  schema: IFC2X3
+  preprocessor_version: Autodesk Revit Architecture 2011 - 1.0
+  originating_system: (Solibri IFC Optimizer)
+  questions:
+    test: 6
+    train: 4
+    excluded: 0
+  categories:
+    direct_retrieval: 2
+    geometric_spatial: 2
+    incomplete_information: 6
+  paths:
+    ifc: data/ifcbench/raw/projects/dental_clinic/str.ifc
+    testset: data/ifcbench/testsets/dental_clinic__str.jsonl
+    graph_cache: data/ifcbench/cache/dental_clinic__str.base.jsonl.gz
+    bundle: data/ifcbench/bundles/dental_clinic__str.base.json
+- model_id: digital_hub__arc
+  project: digital_hub
+  ifc_model: arc
+  hf_path: projects/digital_hub/arc.ifc
+  sha256: 19d7d02d53c2b88e86890ee236297b12bbb0f7748030cd32ff6a22762e9966bb
+  size_bytes: 9022255
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 28
+    train: 36
+    excluded: 0
+  categories:
+    aggregation: 34
+    direct_retrieval: 15
+    geometric_spatial: 3
+    incomplete_information: 12
+  paths:
+    ifc: data/ifcbench/raw/projects/digital_hub/arc.ifc
+    testset: data/ifcbench/testsets/digital_hub__arc.jsonl
+    graph_cache: data/ifcbench/cache/digital_hub__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/digital_hub__arc.base.json
+- model_id: digital_hub__heating
+  project: digital_hub
+  ifc_model: heating
+  hf_path: projects/digital_hub/heating.ifc
+  sha256: a5603e8f6aa4cbf63aece92f92f503e9a578702d8fe96a6d4661490f1843710d
+  size_bytes: 20890415
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 5
+    train: 7
+    excluded: 0
+  categories:
+    aggregation: 11
+    incomplete_information: 1
+  paths:
+    ifc: data/ifcbench/raw/projects/digital_hub/heating.ifc
+    testset: data/ifcbench/testsets/digital_hub__heating.jsonl
+    graph_cache: data/ifcbench/cache/digital_hub__heating.base.jsonl.gz
+    bundle: data/ifcbench/bundles/digital_hub__heating.base.json
+- model_id: digital_hub__plumbing
+  project: digital_hub
+  ifc_model: plumbing
+  hf_path: projects/digital_hub/plumbing.ifc
+  sha256: 0b1d6b0abd8d4cc3f5f798c7581bed2b39b40110ba6348d5470bbef646cfed79
+  size_bytes: 25178864
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 9
+    train: 4
+    excluded: 0
+  categories:
+    aggregation: 13
+  paths:
+    ifc: data/ifcbench/raw/projects/digital_hub/plumbing.ifc
+    testset: data/ifcbench/testsets/digital_hub__plumbing.jsonl
+    graph_cache: data/ifcbench/cache/digital_hub__plumbing.base.jsonl.gz
+    bundle: data/ifcbench/bundles/digital_hub__plumbing.base.json
+- model_id: digital_hub__ventilation
+  project: digital_hub
+  ifc_model: ventilation
+  hf_path: projects/digital_hub/ventilation.ifc
+  sha256: c0a1807875957c4154d45d14a3b5ed480dd3178a5bdc3262302a7eccf76d5cb1
+  size_bytes: 12737833
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 8
+    train: 5
+    excluded: 0
+  categories:
+    aggregation: 12
+    geometric_spatial: 1
+  paths:
+    ifc: data/ifcbench/raw/projects/digital_hub/ventilation.ifc
+    testset: data/ifcbench/testsets/digital_hub__ventilation.jsonl
+    graph_cache: data/ifcbench/cache/digital_hub__ventilation.base.jsonl.gz
+    bundle: data/ifcbench/bundles/digital_hub__ventilation.base.json
+- model_id: duplex__arc
+  project: duplex
+  ifc_model: arc
+  hf_path: projects/duplex/arc.ifc
+  sha256: 707a032566dee8e969a44d95509be46d646440e2443624709f8d3ae2b45f4656
+  size_bytes: 1656153
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 26
+    train: 25
+    excluded: 0
+  categories:
+    aggregation: 9
+    direct_retrieval: 11
+    geometric_spatial: 5
+    incomplete_information: 26
+  paths:
+    ifc: data/ifcbench/raw/projects/duplex/arc.ifc
+    testset: data/ifcbench/testsets/duplex__arc.jsonl
+    graph_cache: data/ifcbench/cache/duplex__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/duplex__arc.base.json
+- model_id: duplex__mep
+  project: duplex
+  ifc_model: mep
+  hf_path: projects/duplex/mep.ifc
+  sha256: 285f85de4424416ba6bade121588dbe0ae278fb4fdb0f4b782051cfdc7c92972
+  size_bytes: 11129368
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 7
+    train: 11
+    excluded: 0
+  categories:
+    aggregation: 5
+    direct_retrieval: 7
+    incomplete_information: 6
+  paths:
+    ifc: data/ifcbench/raw/projects/duplex/mep.ifc
+    testset: data/ifcbench/testsets/duplex__mep.jsonl
+    graph_cache: data/ifcbench/cache/duplex__mep.base.jsonl.gz
+    bundle: data/ifcbench/bundles/duplex__mep.base.json
+- model_id: ettenheim_gis__city
+  project: ettenheim_gis
+  ifc_model: city
+  hf_path: projects/ettenheim_gis/city.ifc
+  sha256: 1d03fce2c1a047abee9b0e631fe0dd19a9928db3e40896ac70df6c3d1446c573
+  size_bytes: 30552021
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 10
+    train: 11
+    excluded: 0
+  categories:
+    aggregation: 8
+    direct_retrieval: 4
+    geometric_spatial: 3
+    incomplete_information: 6
+  paths:
+    ifc: data/ifcbench/raw/projects/ettenheim_gis/city.ifc
+    testset: data/ifcbench/testsets/ettenheim_gis__city.jsonl
+    graph_cache: data/ifcbench/cache/ettenheim_gis__city.base.jsonl.gz
+    bundle: data/ifcbench/bundles/ettenheim_gis__city.base.json
+- model_id: fantasy_hotel_1__arc
+  project: fantasy_hotel_1
+  ifc_model: arc
+  hf_path: projects/fantasy_hotel_1/arc.ifc
+  sha256: cd976f3e9222a49ad072078ed27934f20dbc11c889271b1ee3c1ab4ce504a03e
+  size_bytes: 8455469
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 20
+    train: 21
+    excluded: 0
+  categories:
+    aggregation: 25
+    direct_retrieval: 4
+    geometric_spatial: 1
+    incomplete_information: 11
+  paths:
+    ifc: data/ifcbench/raw/projects/fantasy_hotel_1/arc.ifc
+    testset: data/ifcbench/testsets/fantasy_hotel_1__arc.jsonl
+    graph_cache: data/ifcbench/cache/fantasy_hotel_1__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/fantasy_hotel_1__arc.base.json
+- model_id: fantasy_office_building_1__arc
+  project: fantasy_office_building_1
+  ifc_model: arc
+  hf_path: projects/fantasy_office_building_1/arc.ifc
+  sha256: 2b0fcd8f8abc9000043ea575b22a9153f75219edc3437c157348cbfcc4358569
+  size_bytes: 13427535
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 13
+    train: 22
+    excluded: 0
+  categories:
+    aggregation: 19
+    direct_retrieval: 4
+    geometric_spatial: 8
+    incomplete_information: 4
+  paths:
+    ifc: data/ifcbench/raw/projects/fantasy_office_building_1/arc.ifc
+    testset: data/ifcbench/testsets/fantasy_office_building_1__arc.jsonl
+    graph_cache: data/ifcbench/cache/fantasy_office_building_1__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/fantasy_office_building_1__arc.base.json
+- model_id: fantasy_office_building_2__arc
+  project: fantasy_office_building_2
+  ifc_model: arc
+  hf_path: projects/fantasy_office_building_2/arc.ifc
+  sha256: 944844edfa7a02698b438f2733ccd76aa4a8d471ddd7b02866d77d1b4703bd46
+  size_bytes: 19463969
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 13
+    train: 18
+    excluded: 0
+  categories:
+    aggregation: 18
+    direct_retrieval: 4
+    geometric_spatial: 7
+    incomplete_information: 2
+  paths:
+    ifc: data/ifcbench/raw/projects/fantasy_office_building_2/arc.ifc
+    testset: data/ifcbench/testsets/fantasy_office_building_2__arc.jsonl
+    graph_cache: data/ifcbench/cache/fantasy_office_building_2__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/fantasy_office_building_2__arc.base.json
+- model_id: fantasy_office_building_3__arc
+  project: fantasy_office_building_3
+  ifc_model: arc
+  hf_path: projects/fantasy_office_building_3/arc.ifc
+  sha256: bc92fbc42ecacf0c46246eb5c7e1c12f5a63982aba947aefac5fb46e93cc1e74
+  size_bytes: 9655829
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 13
+    train: 22
+    excluded: 0
+  categories:
+    aggregation: 21
+    direct_retrieval: 3
+    geometric_spatial: 6
+    incomplete_information: 5
+  paths:
+    ifc: data/ifcbench/raw/projects/fantasy_office_building_3/arc.ifc
+    testset: data/ifcbench/testsets/fantasy_office_building_3__arc.jsonl
+    graph_cache: data/ifcbench/cache/fantasy_office_building_3__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/fantasy_office_building_3__arc.base.json
+- model_id: fantasy_residential_building_1__arc
+  project: fantasy_residential_building_1
+  ifc_model: arc
+  hf_path: projects/fantasy_residential_building_1/arc.ifc
+  sha256: dd7000fc4d1d4f651044375e32d48f947ee3aaf6ce8efc634c0e65a4bed48a1c
+  size_bytes: 19719618
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 16
+    train: 21
+    excluded: 0
+  categories:
+    aggregation: 19
+    direct_retrieval: 4
+    geometric_spatial: 8
+    incomplete_information: 6
+  paths:
+    ifc: data/ifcbench/raw/projects/fantasy_residential_building_1/arc.ifc
+    testset: data/ifcbench/testsets/fantasy_residential_building_1__arc.jsonl
+    graph_cache: data/ifcbench/cache/fantasy_residential_building_1__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/fantasy_residential_building_1__arc.base.json
+- model_id: fzk_house__arc
+  project: fzk_house
+  ifc_model: arc
+  hf_path: projects/fzk_house/arc.ifc
+  sha256: 70cc8ff245fc0894201d96496c031005a5cbd7a96b22d8a1b87c5a883fb77994
+  size_bytes: 2570803
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 23
+    train: 26
+    excluded: 0
+  categories:
+    aggregation: 24
+    direct_retrieval: 13
+    incomplete_information: 12
+  paths:
+    ifc: data/ifcbench/raw/projects/fzk_house/arc.ifc
+    testset: data/ifcbench/testsets/fzk_house__arc.jsonl
+    graph_cache: data/ifcbench/cache/fzk_house__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/fzk_house__arc.base.json
+- model_id: hitos__arc
+  project: hitos
+  ifc_model: arc
+  hf_path: projects/hitos/arc.ifc
+  sha256: fe339277c7390b4a99d327846e34239e4d853371fac6951e46503ba8faaa2dcf
+  size_bytes: 64095402
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 26
+    train: 25
+    excluded: 0
+  categories:
+    aggregation: 27
+    direct_retrieval: 14
+    incomplete_information: 10
+  paths:
+    ifc: data/ifcbench/raw/projects/hitos/arc.ifc
+    testset: data/ifcbench/testsets/hitos__arc.jsonl
+    graph_cache: data/ifcbench/cache/hitos__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/hitos__arc.base.json
+- model_id: molio__arc
+  project: molio
+  ifc_model: arc
+  hf_path: projects/molio/arc.ifc
+  sha256: 626654e3b62648d3f0499e17c04d4f087931f048ddf79410f6cb90e45004c086
+  size_bytes: 73945142
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 28
+    train: 30
+    excluded: 0
+  categories:
+    aggregation: 30
+    direct_retrieval: 21
+    incomplete_information: 7
+  paths:
+    ifc: data/ifcbench/raw/projects/molio/arc.ifc
+    testset: data/ifcbench/testsets/molio__arc.jsonl
+    graph_cache: data/ifcbench/cache/molio__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/molio__arc.base.json
+- model_id: samuel_macalister_sample_house__arc
+  project: samuel_macalister_sample_house
+  ifc_model: arc
+  hf_path: projects/samuel_macalister_sample_house/arc.ifc
+  sha256: 1421b55315b99044b639db2704dc086aeb42a37d6032bbc2aecdc8649f7c05f2
+  size_bytes: 25400254
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 30
+    train: 22
+    excluded: 0
+  categories:
+    aggregation: 27
+    direct_retrieval: 10
+    geometric_spatial: 8
+    incomplete_information: 7
+  paths:
+    ifc: data/ifcbench/raw/projects/samuel_macalister_sample_house/arc.ifc
+    testset: data/ifcbench/testsets/samuel_macalister_sample_house__arc.jsonl
+    graph_cache: data/ifcbench/cache/samuel_macalister_sample_house__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/samuel_macalister_sample_house__arc.base.json
+- model_id: samuel_macalister_sample_house__mep
+  project: samuel_macalister_sample_house
+  ifc_model: mep
+  hf_path: projects/samuel_macalister_sample_house/mep.ifc
+  sha256: de8835f2852a7be4cabceeba1bed3027a3bcc3f3c3cc69ae2b16e58ac4158ecb
+  size_bytes: 29610955
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 13
+    train: 9
+    excluded: 0
+  categories:
+    aggregation: 21
+    direct_retrieval: 1
+  paths:
+    ifc: data/ifcbench/raw/projects/samuel_macalister_sample_house/mep.ifc
+    testset: data/ifcbench/testsets/samuel_macalister_sample_house__mep.jsonl
+    graph_cache: data/ifcbench/cache/samuel_macalister_sample_house__mep.base.jsonl.gz
+    bundle: data/ifcbench/bundles/samuel_macalister_sample_house__mep.base.json
+- model_id: schependomlaan__arc
+  project: schependomlaan
+  ifc_model: arc
+  hf_path: projects/schependomlaan/arc.ifc
+  sha256: 57fafa59f03b18c05be211a456e346bdd0445d5c35d66522e598d339e81dfcf4
+  size_bytes: 65078748
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 27
+    train: 24
+    excluded: 0
+  categories:
+    aggregation: 16
+    direct_retrieval: 10
+    geometric_spatial: 3
+    incomplete_information: 22
+  paths:
+    ifc: data/ifcbench/raw/projects/schependomlaan/arc.ifc
+    testset: data/ifcbench/testsets/schependomlaan__arc.jsonl
+    graph_cache: data/ifcbench/cache/schependomlaan__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/schependomlaan__arc.base.json
+- model_id: sixty5__arc
+  project: sixty5
+  ifc_model: arc
+  hf_path: projects/sixty5/arc.ifc
+  sha256: e91ddbbd672bbde946af14631de4c732f0cf8a7cfae5dbbf06fbeab03b5c46df
+  size_bytes: 342657851
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 22
+    train: 28
+    excluded: 0
+  categories:
+    aggregation: 26
+    direct_retrieval: 1
+    geometric_spatial: 17
+    incomplete_information: 6
+  paths:
+    ifc: data/ifcbench/raw/projects/sixty5/arc.ifc
+    testset: data/ifcbench/testsets/sixty5__arc.jsonl
+    graph_cache: data/ifcbench/cache/sixty5__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/sixty5__arc.base.json
+- model_id: sixty5__electrical
+  project: sixty5
+  ifc_model: electrical
+  hf_path: projects/sixty5/electrical.ifc
+  sha256: adb8d5eda2c706a1fded2a00bd38d845e35f513e2f6ba048fc6228274dfb3986
+  size_bytes: 97058912
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 8
+    train: 8
+    excluded: 0
+  categories:
+    aggregation: 16
+  paths:
+    ifc: data/ifcbench/raw/projects/sixty5/electrical.ifc
+    testset: data/ifcbench/testsets/sixty5__electrical.jsonl
+    graph_cache: data/ifcbench/cache/sixty5__electrical.base.jsonl.gz
+    bundle: data/ifcbench/bundles/sixty5__electrical.base.json
+- model_id: sixty5__plumbing
+  project: sixty5
+  ifc_model: plumbing
+  hf_path: projects/sixty5/plumbing.ifc
+  sha256: 15382b06d0a63464b95ba451ce7d5fa981bf6c236ebe3f4f62bb9d2b9abfd821
+  size_bytes: 222099255
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 12
+    train: 6
+    excluded: 0
+  categories:
+    aggregation: 17
+    incomplete_information: 1
+  paths:
+    ifc: data/ifcbench/raw/projects/sixty5/plumbing.ifc
+    testset: data/ifcbench/testsets/sixty5__plumbing.jsonl
+    graph_cache: data/ifcbench/cache/sixty5__plumbing.base.jsonl.gz
+    bundle: data/ifcbench/bundles/sixty5__plumbing.base.json
+- model_id: sixty5__str
+  project: sixty5
+  ifc_model: str
+  hf_path: projects/sixty5/str.ifc
+  sha256: 79f294c643438ac7a494e4871857244c2de0eefa536eda5977af20640a301a22
+  size_bytes: 7422441
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 5
+    train: 6
+    excluded: 0
+  categories:
+    aggregation: 11
+  paths:
+    ifc: data/ifcbench/raw/projects/sixty5/str.ifc
+    testset: data/ifcbench/testsets/sixty5__str.jsonl
+    graph_cache: data/ifcbench/cache/sixty5__str.base.jsonl.gz
+    bundle: data/ifcbench/bundles/sixty5__str.base.json
+- model_id: sixty5__ventilation
+  project: sixty5
+  ifc_model: ventilation
+  hf_path: projects/sixty5/ventilation.ifc
+  sha256: c78f6ad085961500f0890bbffda9e171c1342c5865ca152f64098dd4da644cca
+  size_bytes: 114891068
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 13
+    train: 7
+    excluded: 0
+  categories:
+    aggregation: 18
+    incomplete_information: 2
+  paths:
+    ifc: data/ifcbench/raw/projects/sixty5/ventilation.ifc
+    testset: data/ifcbench/testsets/sixty5__ventilation.jsonl
+    graph_cache: data/ifcbench/cache/sixty5__ventilation.base.jsonl.gz
+    bundle: data/ifcbench/bundles/sixty5__ventilation.base.json
+- model_id: smiley_west__arc
+  project: smiley_west
+  ifc_model: arc
+  hf_path: projects/smiley_west/arc.ifc
+  sha256: 26734e67bdc0fd2ab30cb560bddc279a0a4f23eb4d28861509524e4bbe201c48
+  size_bytes: 6109213
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 18
+    train: 24
+    excluded: 0
+  categories:
+    aggregation: 19
+    direct_retrieval: 4
+    geometric_spatial: 8
+    incomplete_information: 11
+  paths:
+    ifc: data/ifcbench/raw/projects/smiley_west/arc.ifc
+    testset: data/ifcbench/testsets/smiley_west__arc.jsonl
+    graph_cache: data/ifcbench/cache/smiley_west__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/smiley_west__arc.base.json
+- model_id: wbdg_office__arc
+  project: wbdg_office
+  ifc_model: arc
+  hf_path: projects/wbdg_office/arc.ifc
+  sha256: 7108485ac8d2856922a83f1353aea8c6eaab60ff393546750bf648200617a544
+  size_bytes: 4099293
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 14
+    train: 19
+    excluded: 0
+  categories:
+    aggregation: 20
+    direct_retrieval: 4
+    geometric_spatial: 9
+  paths:
+    ifc: data/ifcbench/raw/projects/wbdg_office/arc.ifc
+    testset: data/ifcbench/testsets/wbdg_office__arc.jsonl
+    graph_cache: data/ifcbench/cache/wbdg_office__arc.base.jsonl.gz
+    bundle: data/ifcbench/bundles/wbdg_office__arc.base.json
+- model_id: wbdg_office__mep
+  project: wbdg_office
+  ifc_model: mep
+  hf_path: projects/wbdg_office/mep.ifc
+  sha256: 835263f1a9f84663e19b2d1a73420a09919293d7932a3a514d1fa26ede3dcc1e
+  size_bytes: 41894594
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 24
+    train: 13
+    excluded: 0
+  categories:
+    aggregation: 34
+    direct_retrieval: 1
+    incomplete_information: 2
+  paths:
+    ifc: data/ifcbench/raw/projects/wbdg_office/mep.ifc
+    testset: data/ifcbench/testsets/wbdg_office__mep.jsonl
+    graph_cache: data/ifcbench/cache/wbdg_office__mep.base.jsonl.gz
+    bundle: data/ifcbench/bundles/wbdg_office__mep.base.json
+- model_id: wbdg_office__str
+  project: wbdg_office
+  ifc_model: str
+  hf_path: projects/wbdg_office/str.ifc
+  sha256: 3286777da15bac8a5b2bffaa14fd10a34fa72cbdfbabc8b072c05737f4c280cb
+  size_bytes: 11067475
+  schema: null
+  preprocessor_version: null
+  originating_system: null
+  questions:
+    test: 7
+    train: 4
+    excluded: 0
+  categories:
+    aggregation: 8
+    geometric_spatial: 3
+  paths:
+    ifc: data/ifcbench/raw/projects/wbdg_office/str.ifc
+    testset: data/ifcbench/testsets/wbdg_office__str.jsonl
+    graph_cache: data/ifcbench/cache/wbdg_office__str.base.jsonl.gz
+    bundle: data/ifcbench/bundles/wbdg_office__str.base.json

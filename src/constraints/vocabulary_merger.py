@@ -269,7 +269,8 @@ def merge_graph_stats_into_vocabulary(
     # carry into Neo4j, so they enter the vocabulary, pass SCR, reach the
     # prompt, and are decodable — while every query using them returns nulls.
     # `LongName` is what the model chose for the room name on Building 15,
-    # in both settings, in every run. One db.propertyKeys() call settles it.
+    # in both settings, in every run. The keys in use in the graph settle it
+    # (`collect_property_keys_in_use`, not the never-shrinking token store).
     graph_keys = set(graph_stats.get("property_keys") or ())
     dropped: List[str] = []
     if graph_keys:
