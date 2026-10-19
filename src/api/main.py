@@ -50,8 +50,20 @@ def _resolve_default_test_set() -> Optional[Path]:
     return None
 
 
-def _build_state() -> ApiState:
+def _build_state(
+    ifc_path: Optional[Path] = None,
+    ids_path: Optional[Path] = None,
+    test_set_path: Optional[Path] = None,
+    resolve_default_test_set: bool = True,
+    driver=None,
+) -> ApiState:
     """Open Neo4j driver and build cached schema/test-set state.
+
+    With no arguments this is the startup path: IFC, IDS and test set come from
+    settings. Graph activation (``POST /graph/activate``) passes them explicitly
+    and reuses the live driver; it sets ``resolve_default_test_set=False``,
+    because executing the default test set's gold queries against a different
+    model would score every case against the wrong graph.
 
     Heavy imports (ifcopenshell via schema_scanner, the full llm_engine) are
     deferred here so merely importing ``src.api.main`` stays lightweight — the
@@ -68,20 +80,23 @@ def _build_state() -> ApiState:
     from src.eval.neo4j_exec import collect_graph_stats, execute_gold_queries
     from src.eval.runner import load_test_set
 
-    driver = GraphDatabase.driver(
-        settings.neo4j_uri,
-        auth=(settings.neo4j_user, settings.neo4j_password_value),
-    )
-    driver.verify_connectivity()
-    logger.info("Connected to Neo4j at %s", settings.neo4j_uri)
+    if driver is None:
+        driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_user, settings.neo4j_password_value),
+        )
+        driver.verify_connectivity()
+        logger.info("Connected to Neo4j at %s", settings.neo4j_uri)
+        ifc_path = ifc_path or settings.ifc_file_path
+        ids_path = ids_path or settings.ids_file_path
+    # Activation passes ids_path=None to mean "no IDS". is_file(), not exists():
+    # an unset path that became Path("") is Path("."), which exists.
+    ifc_arg = Path(ifc_path) if ifc_path and Path(ifc_path).is_file() else None
+    ids_arg = Path(ids_path) if ids_path and Path(ids_path).is_file() else None
 
     # Vocabulary (best-effort: missing IFC/IDS files should not kill the API)
     vocabulary = None
-    ids_path = settings.ids_file_path
-    ifc_path = settings.ifc_file_path
     try:
-        ids_arg = ids_path if Path(ids_path).exists() else None
-        ifc_arg = ifc_path if Path(ifc_path).exists() else None
         if ids_arg or ifc_arg:
             vocabulary = build_combined_vocabulary(ids_arg, ifc_arg)
             # Same merge the bundle builder applies. Without it the API scores
@@ -102,8 +117,8 @@ def _build_state() -> ApiState:
     if vocabulary:
         valid_labels = set(vocabulary.get_entity_names())
         valid_properties = set(vocabulary.get_all_property_names())
-    elif Path(ids_path).exists():
-        schema: IDSSchema = IDSParser().parse(ids_path)
+    elif ids_arg:
+        schema: IDSSchema = IDSParser().parse(ids_arg)
         valid_labels = schema.get_neo4j_labels()
         valid_properties = set(schema.properties)
     # No hardcoded property top-up here. It used to add
@@ -116,7 +131,8 @@ def _build_state() -> ApiState:
     # Test set + gold executions (best-effort)
     test_cases: list = []
     gold_id_sets: dict = {}
-    test_set_path: Optional[Path] = _resolve_default_test_set()
+    if test_set_path is None and resolve_default_test_set:
+        test_set_path = _resolve_default_test_set()
     if test_set_path:
         logger.info("Resolved test-set path: %s", test_set_path)
         try:
@@ -127,7 +143,7 @@ def _build_state() -> ApiState:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Test set / gold execution failed: %s", exc)
-    else:
+    elif resolve_default_test_set:
         logger.warning(
             "No test-set file found in %s",
             [str(p) for p in DEFAULT_TEST_SET_CANDIDATES],
@@ -159,7 +175,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    from src.api.routers import cypher, evaluation, health, schema_router
+    from src.api.routers import cypher, evaluation, graph, health, schema_router
 
     app = FastAPI(
         title="Chat.DT API",
@@ -175,6 +191,7 @@ def create_app() -> FastAPI:
     app.include_router(cypher.router)
     app.include_router(evaluation.router)
     app.include_router(schema_router.router)
+    app.include_router(graph.router)
 
     return app
 

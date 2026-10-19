@@ -346,3 +346,45 @@ def test_runner_load_bundle_rehydrates_vocabulary(tmp_path):
     assert runner.vocabulary.strict_properties == {"FireRating"}
     assert runner.ids_schema.entities == {"IFCWALL"}
     assert runner.model_context is not None
+
+
+# -----------------------------------------------------------------------------
+# Bundle <-> server graph identity
+# -----------------------------------------------------------------------------
+
+def _identity_runner(tmp_path, handler, bundle_graph):
+    runner = ApiExperimentRunner(
+        client=_build_client(handler),
+        config=ApiRunnerConfig(bundle_path=tmp_path / "unused.json", output_dir=tmp_path),
+        app_settings=Settings(llm_provider=LLMProvider.GEMINI, llm_model_name="m"),
+    )
+    runner.bundle_graph = bundle_graph
+    return runner
+
+
+def _active(fp, model_id="dental_clinic__arc"):
+    return lambda r: httpx.Response(200, json={
+        "meta": {"model_id": model_id, "fingerprint": fp},
+        "live_fingerprint": fp, "matches_meta": True,
+    })
+
+
+def test_graph_identity_accepts_the_matching_graph(tmp_path):
+    runner = _identity_runner(tmp_path, _active("a" * 64),
+                              {"model_id": "dental_clinic__arc", "fingerprint": "a" * 64})
+    runner._check_graph_identity()
+
+
+def test_graph_identity_refuses_another_model(tmp_path):
+    runner = _identity_runner(tmp_path, _active("b" * 64, "dental_clinic__str"),
+                              {"model_id": "dental_clinic__arc", "fingerprint": "a" * 64})
+    with pytest.raises(RuntimeError, match="dental_clinic__str"):
+        runner._check_graph_identity()
+
+
+def test_graph_identity_only_warns_without_a_fingerprint(tmp_path):
+    # Bundles from before graph_cache (bundle_b15_ids.json) still run.
+    _identity_runner(tmp_path, _active("b" * 64), {})._check_graph_identity()
+    # So does a server from before /graph/active existed.
+    _identity_runner(tmp_path, lambda r: httpx.Response(404),
+                     {"fingerprint": "a" * 64})._check_graph_identity()

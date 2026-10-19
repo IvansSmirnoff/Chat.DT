@@ -138,3 +138,44 @@ class VocabularyResponse(BaseModel):
     relations: List[str]
     ids_loaded: bool
     ifc_loaded: bool
+
+
+# -----------------------------------------------------------------------------
+# Graph (which model is loaded)
+# -----------------------------------------------------------------------------
+
+class ActiveGraphResponse(BaseModel):
+    meta: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="The (:_GraphMeta) record: model_id, enrichment, fingerprint, "
+                    "loader_rev. None for a graph loaded without graph_cache.",
+    )
+    live_fingerprint: str
+    matches_meta: bool = Field(
+        ...,
+        description="False if the graph changed after it was exported/restored.",
+    )
+
+
+class ActivateRequest(BaseModel):
+    model_id: str = Field(..., description="Manifest model_id, e.g. dental_clinic__arc")
+    state: str = Field(default="base", description="Graph state: base, topology, ...")
+    ids_path: Optional[str] = Field(
+        default=None,
+        description="IDS file under the data directory, for an IDS-grounded vocabulary.",
+    )
+    test_set_path: Optional[str] = Field(
+        default=None,
+        description="Test set with gold Cypher under the data directory. None: no "
+                    "gold execution (IFC-Bench ground truth is free text).",
+    )
+
+
+class ActivateResponse(BaseModel):
+    model_id: str
+    state: str
+    fingerprint: str
+    totals: Dict[str, int]
+    vocabulary_entities: int
+    vocabulary_properties: int
+    test_cases: int

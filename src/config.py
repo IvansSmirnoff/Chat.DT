@@ -157,6 +157,17 @@ class Settings(BaseSettings):
         description="Bearer token required for authenticated API requests. "
                     "Empty disables the API (all requests return 503).",
     )
+    api_admin_token: SecretStr = Field(
+        default=SecretStr(""),
+        description="Separate bearer token for state-changing admin endpoints "
+                    "(graph activation wipes and restores Neo4j). Empty disables "
+                    "them (503), so a deployment without one cannot be wiped "
+                    "with the ordinary client token.",
+    )
+    ifcbench_manifest_path: Path = Field(
+        default=Path("/app/data/ifcbench/manifest.yaml"),
+        description="IFC-Bench run manifest (scripts/ifcbench/build_testset.py)",
+    )
     api_host: str = Field(
         default="0.0.0.0",
         description="Interface for the FastAPI app to bind to",
@@ -196,6 +207,11 @@ class Settings(BaseSettings):
     def api_bearer_token_value(self) -> str:
         """Get the API bearer token as a plain string ('' if unset)."""
         return self.api_bearer_token.get_secret_value()
+
+    @property
+    def api_admin_token_value(self) -> str:
+        """Get the admin bearer token as a plain string ('' if unset)."""
+        return self.api_admin_token.get_secret_value()
 
 
 # Global settings instance

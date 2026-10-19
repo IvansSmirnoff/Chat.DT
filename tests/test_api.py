@@ -204,3 +204,45 @@ def test_no_token_configured_returns_503(monkeypatch):
     app.state.api_state = _build_state()
     r = tc.get("/health/ready", headers={"Authorization": "Bearer anything"})
     assert r.status_code == 503
+
+
+# -----------------------------------------------------------------------------
+# /graph
+# -----------------------------------------------------------------------------
+
+def test_graph_active_requires_the_bearer_token(client):
+    assert client.get("/graph/active").status_code == 401
+
+
+def test_graph_activate_is_closed_without_an_admin_token(client, monkeypatch):
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(settings, "api_admin_token", SecretStr(""))
+    r = client.post("/graph/activate", json={"model_id": "dental_clinic__arc"},
+                    headers={"Authorization": f"Bearer {TEST_TOKEN}"})
+    assert r.status_code == 503
+
+
+def test_graph_activate_rejects_the_client_token(client, monkeypatch):
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(settings, "api_admin_token", SecretStr("admin-token-please-ignore"))
+    r = client.post("/graph/activate", json={"model_id": "dental_clinic__arc"},
+                    headers={"Authorization": f"Bearer {TEST_TOKEN}"})
+    assert r.status_code == 403
+
+
+def test_graph_activate_refuses_paths_outside_the_data_dir(tmp_path):
+    from fastapi import HTTPException
+
+    from src.api.routers.graph import _data_file
+
+    data_root = tmp_path / "data"
+    (data_root / "clinic").mkdir(parents=True)
+    (data_root / "clinic" / "req.ids").write_text("<ids/>")
+    (tmp_path / "secret.txt").write_text("nope")
+
+    assert _data_file("data/clinic/req.ids", data_root) == (data_root / "clinic" / "req.ids").resolve()
+    with pytest.raises(HTTPException) as exc:
+        _data_file("data/../secret.txt", data_root)
+    assert exc.value.status_code == 400

@@ -42,6 +42,7 @@ from src.constraints.vocabulary_merger import (
     build_combined_vocabulary,
     merge_graph_stats_into_vocabulary,
 )
+from src.etl.graph_cache import fingerprint, graph_summary, read_meta
 from src.eval.neo4j_exec import collect_graph_stats
 from scripts.create_model_dump import export_from_ifc
 
@@ -117,6 +118,23 @@ def build_bundle(
     logger.info(f"Connecting to Neo4j at {neo4j_uri}")
     driver = _open_driver(neo4j_uri, neo4j_user, neo4j_password)
     try:
+        # Which graph this bundle describes. The client compares the fingerprint
+        # with GET /graph/active before running, so a bundle built for one model
+        # cannot silently be decoded against another.
+        meta = read_meta(driver) or {}
+        live_fingerprint = fingerprint(graph_summary(driver))
+        if meta.get("fingerprint") not in (None, live_fingerprint):
+            logger.warning(
+                "Graph changed since it was exported/restored as %s; the bundle "
+                "records the live fingerprint %s", meta.get("model_id"), live_fingerprint[:12],
+            )
+        graph_identity = {
+            "model_id": meta.get("model_id"),
+            "enrichment": meta.get("enrichment"),
+            "loader_rev": meta.get("loader_rev"),
+            "fingerprint": live_fingerprint,
+        }
+
         logger.info("Collecting graph stats")
         graph_stats = collect_graph_stats(driver)
 
@@ -140,6 +158,7 @@ def build_bundle(
             "ifc_file": ifc_path.name,
             "ids_file": ids_path.name if ids_path is not None else None,
         },
+        "graph": graph_identity,
         "combined_vocabulary": vocab,
         "ids_schema": ids_schema,
         "model_dump": model_dump,

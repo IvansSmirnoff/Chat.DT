@@ -113,3 +113,7 @@ class ApiClient:
 
     def get_valid_properties(self) -> List[str]:
         return (self._request("GET", "/schema/valid-properties") or {}).get("properties", [])
+
+    def get_active_graph(self) -> Dict[str, Any]:
+        """Which model the server has loaded, and its live fingerprint."""
+        return self._request("GET", "/graph/active")

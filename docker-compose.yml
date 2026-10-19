@@ -13,9 +13,11 @@ services:
       - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_server_memory_heap_initial__size=256m
-      - NEO4J_server_memory_heap_max__size=512m
-      - NEO4J_server_memory_pagecache_size=256m
+      # Defaults fit a 4 GB Docker Desktop VM. The large IFC-Bench models
+      # (sixty5/arc is 343 MB) need more; raise these on the server.
+      - NEO4J_server_memory_heap_initial__size=${NEO4J_HEAP_INITIAL:-256m}
+      - NEO4J_server_memory_heap_max__size=${NEO4J_HEAP_MAX:-512m}
+      - NEO4J_server_memory_pagecache_size=${NEO4J_PAGECACHE:-256m}
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -79,6 +81,10 @@ services:
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
       - API_BEARER_TOKEN=${API_BEARER_TOKEN:-}
+      # Separate token for POST /graph/activate (wipes and restores Neo4j).
+      # Unset = activation disabled.
+      - API_ADMIN_TOKEN=${API_ADMIN_TOKEN:-}
+      - IFCBENCH_MANIFEST_PATH=${IFCBENCH_MANIFEST_PATH:-/app/data/ifcbench/manifest.yaml}
       - API_HOST=0.0.0.0
       - API_PORT=8000
       - IFC_FILE_PATH=${IFC_FILE_PATH:-/app/data/model.ifc}

@@ -131,6 +131,7 @@ class ApiExperimentRunner:
         self.test_cases: List[Dict[str, Any]] = []
         self.value_enumerations: Dict[str, List[str]] = {}
         self.few_shot_examples: List[Dict[str, str]] = []
+        self.bundle_graph: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Setup
@@ -143,6 +144,7 @@ class ApiExperimentRunner:
         self._check_api_health()
         logger.info("setup: loading bundle from %s", self.config.bundle_path)
         self._load_bundle()
+        self._check_graph_identity()
         logger.info(
             "setup: building LLM engine (provider=%s model=%s) — this may "
             "download/load weights",
@@ -199,6 +201,7 @@ class ApiExperimentRunner:
 
         self.value_enumerations = bundle.get("value_enumerations") or {}
         self.few_shot_examples = bundle.get("few_shot_examples") or []
+        self.bundle_graph = bundle.get("graph") or {}
 
         logger.info(
             "Bundle loaded: %d entities, %d properties, model_dump=%d elements, "
@@ -209,6 +212,38 @@ class ApiExperimentRunner:
             len(self.value_enumerations),
             len(self.few_shot_examples),
         )
+
+    def _check_graph_identity(self) -> None:
+        """Refuse to run a bundle against a graph it was not built from.
+
+        The bundle's vocabulary, grammar, value enumerations and few-shots all
+        describe one graph state. Decoding them against another model returns
+        well-formed queries over labels and values that are not there, and
+        every one of them scores as a model failure. Only a known mismatch
+        raises: a bundle or server from before fingerprints existed warns.
+        """
+        expected = self.bundle_graph.get("fingerprint")
+        try:
+            active = self.client.get_active_graph()
+        except ApiClientError as exc:
+            logger.warning("Server cannot report its graph (%s); fingerprint not checked.",
+                           exc.status_code)
+            return
+        live = active.get("live_fingerprint")
+        if not expected:
+            logger.warning("Bundle carries no graph fingerprint (built before "
+                           "graph_cache); cannot confirm it matches the server graph.")
+            return
+        if live != expected:
+            server_model = (active.get("meta") or {}).get("model_id")
+            raise RuntimeError(
+                f"Bundle was built for {self.bundle_graph.get('model_id')!r} "
+                f"(fingerprint {expected[:12]}) but the server graph is "
+                f"{server_model!r} ({str(live)[:12]}). Activate the right model "
+                "(POST /graph/activate) or rebuild the bundle."
+            )
+        logger.info("Graph identity confirmed: %s (%s)",
+                    self.bundle_graph.get("model_id"), expected[:12])
 
     def _build_engine(self) -> None:
         wants_strict = any(s.uses_strict_constraints for s in self.config.settings)

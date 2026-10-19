@@ -151,3 +151,4 @@ coglioni_sardi/
 # IFC-Bench downloads and graph caches (large, reproducible from fetch.py + manifest)
 data/ifcbench/raw/
 data/ifcbench/cache/
+data/ifcbench/bundles/
