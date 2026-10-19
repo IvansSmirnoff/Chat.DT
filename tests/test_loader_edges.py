@@ -60,3 +60,100 @@ def test_relationship_entities_not_materialised_as_nodes(neo4j_driver):
     ]
     leaked = [l for l in forbidden if l in labels]
     assert not leaked, f"IfcRelationship leaked as nodes: {leaked}"
+
+
+def _live_property_names(driver) -> set[str]:
+    """Property names actually present on nodes.
+
+    ``db.propertyKeys()`` is the wrong source here: the token store never
+    shrinks, so it still lists keys from every model ever loaded into this
+    database. ``db.schema.nodeTypeProperties()`` reflects the current graph.
+    """
+    with driver.session() as s:
+        return {
+            record["propertyName"]
+            for record in s.run(
+                "CALL db.schema.nodeTypeProperties() YIELD propertyName "
+                "RETURN DISTINCT propertyName"
+            )
+        }
+
+
+def test_direct_ifc_attributes_are_written(neo4j_driver):
+    """The D1 regression: the loader once read four attributes and no more.
+
+    Which of these a given model carries depends on which classes it contains,
+    so this asserts the *class* of failure -- no attribute beyond the original
+    four reaching the graph at all -- rather than a specific model's counts.
+    """
+    live = _live_property_names(neo4j_driver)
+    schema_attributes = {
+        "LongName", "OverallWidth", "OverallHeight", "Elevation",
+        "Tag", "PredefinedType", "CompositionType", "RefElevation",
+    }
+    found = schema_attributes & live
+    assert found, (
+        "no IFC direct attribute beyond GlobalId/Name/Description/ObjectType "
+        "is in the graph — the schema-derived attribute walk is not running"
+    )
+
+
+def test_material_layers_carry_their_thickness(neo4j_driver):
+    """Layer sets used to collapse to the first layer's name."""
+    layers = _count(neo4j_driver, "MATCH (l:IfcMaterialLayer) RETURN count(l) AS c")
+    if layers == 0:
+        pytest.skip("loaded model has no material layer sets")
+    with_thickness = _count(
+        neo4j_driver,
+        "MATCH (l:IfcMaterialLayer) WHERE l.LayerThickness IS NOT NULL "
+        "RETURN count(l) AS c",
+    )
+    assert with_thickness > 0, "layer nodes exist but none carries a thickness"
+
+    named = _count(
+        neo4j_driver,
+        "MATCH (l:IfcMaterialLayer) WHERE l.MaterialName IS NOT NULL "
+        "RETURN count(l) AS c",
+    )
+    # The grammar admits one hop, so the material name has to be reachable
+    # without a second traversal.
+    assert named > 0, "layer nodes carry no MaterialName — single-hop queries break"
+
+
+def test_material_layers_are_ordered(neo4j_driver):
+    layers = _count(neo4j_driver, "MATCH (l:IfcMaterialLayer) RETURN count(l) AS c")
+    if layers == 0:
+        pytest.skip("loaded model has no material layer sets")
+    indexed = _count(
+        neo4j_driver,
+        "MATCH (l:IfcMaterialLayer) WHERE l.LayerIndex IS NOT NULL RETURN count(l) AS c",
+    )
+    assert indexed == layers, "some layer nodes have no LayerIndex"
+
+
+def test_materials_are_named(neo4j_driver):
+    unnamed = _count(
+        neo4j_driver,
+        "MATCH (m:IfcMaterial) WHERE m.Name IS NULL RETURN count(m) AS c",
+    )
+    assert unnamed == 0, f"{unnamed} material nodes have no Name"
+
+
+def test_graph_relationship_types_are_all_declared(neo4j_driver):
+    """Nothing writes an edge type that is not in the shared spec table."""
+    from src.utils.ifc_edges import EDGE_SPECS, SYNTHETIC_EDGE_NOTES
+
+    declared = {spec.rel_type for spec in EDGE_SPECS}
+    declared |= {rel_type for rel_type, _ in SYNTHETIC_EDGE_NOTES.values()}
+    declared |= {"HAS_MATERIAL_LAYER"}
+
+    with neo4j_driver.session() as s:
+        live = {
+            r["relationshipType"]
+            for r in s.run(
+                "CALL db.relationshipTypes() YIELD relationshipType "
+                "RETURN relationshipType"
+            )
+        }
+    undeclared = live - declared
+    assert not undeclared, f"graph carries undeclared edge types: {undeclared}"

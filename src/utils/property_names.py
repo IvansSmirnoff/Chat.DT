@@ -14,8 +14,13 @@ name.
 
 from typing import Set
 
-# Neo4j keywords / reserved names that we prefix with ``ifc_`` to avoid clashing
+# Neo4j / Cypher reserved names that we prefix with ``ifc_`` to avoid clashing
 # with Cypher syntax when used unbacktick'd.
+#
+# This is a *Cypher* constraint, not an IFC one: the constrained-decoding grammar
+# emits property accesses as bare ``var.Property`` with no backticks, so any key
+# that needs quoting produces a syntactically invalid query that still matches
+# the regex -- decodable, and broken only at execution time.
 RESERVED_NAMES = {"id", "labels", "type", "start", "end"}
 
 
@@ -29,6 +34,15 @@ def canonical_property_name(name: str) -> str:
       3. Collapse runs of consecutive underscores to one.
       4. Strip leading and trailing underscores.
       5. Prefix Neo4j reserved names with ``ifc_``.
+      6. Prefix with ``ifc_`` if the result does not start with a letter or an
+         underscore.
+
+    Step 6 exists because Cypher requires backticks around an identifier that
+    starts with a digit, and the grammar emits property accesses unbacktick'd.
+    Revit panel-schedule exports produce exactly this (``30" Circuit Height`` ->
+    ``30_Circuit_Height``), and an Italian pset produced ``0_INTERVENTO``, which
+    reached the Building 15 vocabulary and was therefore decodable as
+    ``s.0_INTERVENTO`` -- regex-valid, Cypher-invalid.
 
     Idempotent: ``canonical_property_name(canonical_property_name(x)) ==
     canonical_property_name(x)``.
@@ -42,6 +56,9 @@ def canonical_property_name(name: str) -> str:
     sanitized = sanitized.strip("_")
 
     if sanitized.lower() in RESERVED_NAMES:
+        sanitized = f"ifc_{sanitized}"
+
+    if sanitized and not (sanitized[0].isalpha() or sanitized[0] == "_"):
         sanitized = f"ifc_{sanitized}"
 
     return sanitized

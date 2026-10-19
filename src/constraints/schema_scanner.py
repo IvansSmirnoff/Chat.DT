@@ -18,6 +18,8 @@ from typing import Any, Dict, Set, Tuple
 import ifcopenshell
 import ifcopenshell.util.element
 
+from src.utils.ifc_attributes import storable_attributes
+from src.utils.ifc_edges import EDGE_SPECS
 from src.utils.property_names import canonical_property_name
 
 logger = logging.getLogger(__name__)
@@ -103,13 +105,17 @@ class IFCSchemaScanner:
         ```
     """
     
-    # Properties to always include (core IFC identity properties)
-    CORE_PROPERTIES = {
-        "GlobalId", "Name", "Description", "ObjectType", "Tag",
-        "LongName", "Phase", "PredefinedType",
-    }
-    
-    # Properties to skip (internal/system properties)
+    # Which IFC direct attributes an entity has is derived from the schema at
+    # scan time (see ``src.utils.ifc_attributes``), not listed here. The list
+    # that used to live at this spot held eight names and was unioned onto
+    # *every* entity regardless of whether the entity declared them -- and
+    # three of them (``LongName``, ``PredefinedType``, ``Tag``) were not
+    # written by the loader at all, so they reached the prompt, passed SCR,
+    # decoded fine under STRICT, and returned nulls.
+
+    # Property-set keys ifcopenshell injects as bookkeeping, plus inverse
+    # attribute names that are relationships rather than properties. These are
+    # structural: they are never authored property names.
     SKIP_PROPERTIES = {
         "id", "type", "OwnerHistory", "ObjectPlacement", 
         "Representation", "HasAssignments", "Nests", "IsNestedBy",
@@ -152,10 +158,6 @@ class IFCSchemaScanner:
         # Scan relationships
         self._scan_relationships(schema)
         
-        # Add core properties to all entities
-        for entity in schema.entities.values():
-            entity.properties.update(self.CORE_PROPERTIES)
-        schema.all_properties.update(self.CORE_PROPERTIES)
         
         logger.info(
             f"Schema scan complete: {len(schema.entities)} entities, "
@@ -211,6 +213,13 @@ class IFCSchemaScanner:
             # Initialize entity schema if needed
             if entity_name not in schema.entities:
                 schema.entities[entity_name] = EntitySchema(name=entity_name)
+                # Direct IFC attributes, derived from this class's schema
+                # declaration. These are the names an IDS speaks
+                # (IfcSpace.LongName, IfcDoor.OverallWidth), as opposed to the
+                # exporter's property-set vocabulary that get_psets returns.
+                attributes = set(storable_attributes(self._ifc_file.schema, entity_name))
+                schema.entities[entity_name].properties.update(attributes)
+                schema.all_properties.update(attributes)
             
             entity_schema = schema.entities[entity_name]
             entity_schema.count += 1
@@ -255,7 +264,14 @@ class IFCSchemaScanner:
         """Scan IfcTypeProduct elements for type-level properties."""
         type_products = self._ifc_file.by_type("IfcTypeProduct")
         
+        seen_types: Set[str] = set()
         for type_product in type_products:
+            type_name = type_product.is_a()
+            if type_name not in seen_types:
+                seen_types.add(type_name)
+                schema.all_properties.update(
+                    storable_attributes(self._ifc_file.schema, type_name)
+                )
             try:
                 psets = ifcopenshell.util.element.get_psets(type_product, psets_only=False)
                 
@@ -285,51 +301,40 @@ class IFCSchemaScanner:
     def _scan_relationships(self, schema: IFCModelSchema) -> None:
         """
         Scan relationships to understand entity connections.
-        
-        Extracts relationship types that connect entities.
+
+        Driven by ``src.utils.ifc_edges.EDGE_SPECS`` -- the same table the ETL
+        loader materialises from -- so the advertised relationship vocabulary
+        cannot drift from what is actually in the graph. This method previously
+        knew about four relationship types while the loader wrote eight; the
+        four it did not know about were undecodable under STRICT, invisible
+        under SOFT, and scored as violations by SCR.
+
+        Material and classification associations are not here because their far
+        side is not an ``IfcProduct``; they arrive through the live graph stats
+        merge instead.
         """
-        # Spatial containment
-        for rel in self._ifc_file.by_type("IfcRelContainedInSpatialStructure"):
-            spatial_type = rel.RelatingStructure.is_a()
-            
-            if spatial_type in schema.entities:
-                schema.entities[spatial_type].relations.add("CONTAINS")
-            
-            for element in rel.RelatedElements:
-                element_type = element.is_a()
-                if element_type in schema.entities:
-                    schema.entities[element_type].relations.add("CONTAINED_IN")
-            
-            schema.all_relations.add("CONTAINS")
-        
-        # Decomposition (aggregation)
-        for rel in self._ifc_file.by_type("IfcRelAggregates"):
-            parent_type = rel.RelatingObject.is_a()
-            
-            if parent_type in schema.entities:
-                schema.entities[parent_type].relations.add("DECOMPOSES")
-            
-            for child in rel.RelatedObjects:
-                child_type = child.is_a()
-                if child_type in schema.entities:
-                    schema.entities[child_type].relations.add("DECOMPOSED_BY")
-            
-            schema.all_relations.add("DECOMPOSES")
-        
-        # Voids (openings in elements)
-        for rel in self._ifc_file.by_type("IfcRelVoidsElement"):
-            element_type = rel.RelatingBuildingElement.is_a()
-            if element_type in schema.entities:
-                schema.entities[element_type].relations.add("HAS_OPENING")
-            schema.all_relations.add("HAS_OPENING")
-        
-        # Fills (doors/windows filling openings)
-        for rel in self._ifc_file.by_type("IfcRelFillsElement"):
-            element_type = rel.RelatedBuildingElement.is_a()
-            if element_type in schema.entities:
-                schema.entities[element_type].relations.add("FILLS")
-            schema.all_relations.add("FILLS")
-    
+        for spec in EDGE_SPECS:
+            for rel in self._ifc_file.by_type(spec.ifc_class):
+                sources = self._entities_of(getattr(rel, spec.source_attr, None))
+                targets = self._entities_of(getattr(rel, spec.target_attr, None))
+                if not sources or not targets:
+                    continue
+
+                schema.all_relations.add(spec.rel_type)
+                for entity in sources:
+                    name = entity.is_a()
+                    if name in schema.entities:
+                        schema.entities[name].relations.add(spec.rel_type)
+
+    @staticmethod
+    def _entities_of(value: Any) -> Tuple[Any, ...]:
+        """Normalise a relationship attribute to a tuple of entities."""
+        if value is None:
+            return ()
+        if isinstance(value, (list, tuple)):
+            return tuple(v for v in value if hasattr(v, "is_a"))
+        return (value,) if hasattr(value, "is_a") else ()
+
 
 # =============================================================================
 # Convenience Functions

@@ -91,3 +91,43 @@ def test_loader_and_scanner_agree_for_known_drift_cases():
         # Loader result with no collisions -- must match the canonical form.
         loader_out = loader_fn(raw, set())
         assert scanner_out == loader_out, (raw, scanner_out, loader_out)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Revit panel-schedule exports; the quote is stripped, the digit is not.
+        ('30" Circuit Height', "ifc_30_Circuit_Height"),
+        ("12 Circuit Height", "ifc_12_Circuit_Height"),
+        # An Italian property set that reached the Building 15 vocabulary.
+        ("0 INTERVENTO", "ifc_0_INTERVENTO"),
+    ],
+)
+def test_names_starting_with_a_digit_are_prefixed(raw, expected):
+    """Cypher needs backticks around these; the grammar emits none.
+
+    Without the prefix the name is regex-valid and Cypher-invalid: the model
+    decodes `s.0_INTERVENTO` happily and the query fails at execution.
+    """
+    assert canonical_property_name(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ['30" Circuit Height', "0 INTERVENTO", "1st Floor"])
+def test_digit_prefix_is_idempotent(raw):
+    once = canonical_property_name(raw)
+    assert canonical_property_name(once) == once
+
+
+def test_every_canonical_name_is_a_bare_cypher_identifier():
+    """The invariant the grammar depends on."""
+    import re
+
+    samples = [
+        '30" Circuit Height', "0 INTERVENTO", "1st Floor", "Ramp Max-Slope (1/x)",
+        "type", "start", "Pset_WallCommon.FireRating", "___", "Name",
+    ]
+    for raw in samples:
+        name = canonical_property_name(raw)
+        if not name:
+            continue
+        assert re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name), f"{raw!r} -> {name!r}"

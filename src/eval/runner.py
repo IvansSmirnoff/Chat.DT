@@ -428,11 +428,11 @@ class ExperimentRunner:
                 self.value_enumerations = {}
                 self.few_shot_examples = []
         
-        # Add common properties
-        self.valid_properties.update({
-            "GlobalId", "Name", "Description", "ObjectType"
-        })
-        
+        # No hardcoded property top-up: direct IFC attributes now reach the
+        # vocabulary from the schema scan (see src/utils/ifc_attributes.py),
+        # so adding four of them by hand would only re-admit names the graph
+        # may not carry.
+
         # Model dump loading
         model_dump_path = self.config.model_dump_path or self.settings.model_dump_path
         if model_dump_path and Path(model_dump_path).exists():

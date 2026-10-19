@@ -106,7 +106,12 @@ def _build_state() -> ApiState:
         schema: IDSSchema = IDSParser().parse(ids_path)
         valid_labels = schema.get_neo4j_labels()
         valid_properties = set(schema.properties)
-    valid_properties.update({"GlobalId", "Name", "Description", "ObjectType"})
+    # No hardcoded property top-up here. It used to add
+    # {"GlobalId", "Name", "Description", "ObjectType"} -- exactly the four
+    # attributes the loader wrote -- to paper over the fact that the ETL read
+    # no others. The scanner now derives every entity's direct attributes from
+    # the IFC schema, so they arrive in the vocabulary on their own merit and a
+    # name that is *not* in the graph is correctly scored as a violation.
 
     # Test set + gold executions (best-effort)
     test_cases: list = []
