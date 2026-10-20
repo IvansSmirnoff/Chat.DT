@@ -76,17 +76,49 @@ def done_keys(path: Path, need_judgement: bool) -> set:
     return keys
 
 
-def ensure_graph(driver, manifest, entry, state: str, policy: str) -> Dict[str, Any]:
-    """Make the loaded graph the manifest's snapshot for this model, or refuse."""
+def build_snapshot(driver, manifest, entry, snapshot: Path, etl_report_dir: Path) -> str:
+    """ETL the model's IFC file and export it: a fresh machine needs no hand-made files.
+
+    Only the ``base`` state can be built this way; enriched states are derived
+    from it by their own scripts.
+    """
+    from src.etl.graph_cache import export_with_meta
+    from src.etl.loader import IFCToNeo4jLoader
+
+    ifc = resolve(manifest, entry["paths"]["ifc"])
+    if not ifc.is_file():
+        raise RuntimeError(f"{entry['model_id']}: {ifc} missing; run scripts/ifcbench/fetch.py")
+    logger.info("No snapshot for %s: running the ETL on %s", entry["model_id"], ifc.name)
+    etl_report_dir.mkdir(parents=True, exist_ok=True)
+    stats = IFCToNeo4jLoader().run(ifc_path=ifc, report_path=etl_report_dir / f"{entry['model_id']}.json")
+    if stats["errors"]:
+        logger.warning("%s: ETL reported %d element errors", entry["model_id"], stats["errors"])
+    header = export_with_meta(driver, snapshot, entry["model_id"], "base", ifc)
+    return header["fingerprint"]
+
+
+def ensure_graph(driver, manifest, entry, state: str, policy: str,
+                 etl_report_dir: Path) -> Dict[str, Any]:
+    """Make the loaded graph the manifest's snapshot for this model, or refuse.
+
+    ``auto``: restore the snapshot if the live graph differs, and build the
+    snapshot first (ETL + export) if there is none. ``never``: only accept a
+    graph that already matches.
+    """
     snapshot = cache_path(manifest, entry, state)
-    expected = read_header(snapshot)["fingerprint"] if snapshot.is_file() else None
+    if not snapshot.is_file():
+        if policy != "auto" or state != "base":
+            raise RuntimeError(f"{entry['model_id']}: no {state} snapshot at {snapshot}")
+        return {"fingerprint": build_snapshot(driver, manifest, entry, snapshot, etl_report_dir),
+                "restored": False, "built": True}
+    expected = read_header(snapshot)["fingerprint"]
     live = fingerprint(graph_summary(driver))
-    if expected and live == expected:
+    if live == expected:
         return {"fingerprint": live, "restored": False}
-    if policy == "never" or not expected:
+    if policy == "never":
         raise RuntimeError(
             f"{entry['model_id']}: loaded graph {live[:12]} is not snapshot "
-            f"{(expected or 'missing')[:12]} at {snapshot}; restore it or pass --restore auto"
+            f"{expected[:12]} at {snapshot}; restore it or pass --restore auto"
         )
     logger.info("Restoring %s (%s)", entry["model_id"], snapshot.name)
     restore_graph(driver, snapshot)
@@ -139,7 +171,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--no-judge", action="store_true")
     p.add_argument("--run", required=True, help="Run name (results/ifcbench/runs/<run>)")
     p.add_argument("--state", default="base", help="Graph state snapshot to use")
-    p.add_argument("--restore", choices=["auto", "never"], default="auto")
+    p.add_argument("--restore", choices=["auto", "never"], default="auto",
+                   help="auto: restore the snapshot if needed, building it (ETL) if missing")
     p.add_argument("--max-steps", type=int, default=loop.MAX_STEPS)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--limit", type=int, default=None, help="At most N questions per model")
@@ -191,7 +224,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             if not todo:
                 logger.info("%s: nothing to do (%d questions)", mid, len(questions))
                 continue
-            identity = ensure_graph(driver, manifest, entry, args.state, args.restore)
+            identity = ensure_graph(driver, manifest, entry, args.state, args.restore,
+                                    etl_report_dir=out / "etl")
             ctx = build_graph_context(driver, resolve(manifest, entry["paths"]["ifc"]))
             schema = ctx.schema_prompt()
             (out / "context" / f"{mid}.txt").write_text(schema, encoding="utf-8")

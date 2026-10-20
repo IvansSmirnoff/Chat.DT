@@ -189,6 +189,23 @@ def export_graph(driver, out_path: Path, meta: Dict[str, Any]) -> Dict[str, Any]
     return header
 
 
+def export_with_meta(driver, out_path: Path, model_id: str, enrichment: str = "base",
+                     ifc: Optional[Path] = None) -> Dict[str, Any]:
+    """Export, and stamp the live graph with the metadata the snapshot carries.
+
+    The exported graph is now a known state, so the ``(:_GraphMeta)`` node says
+    which one -- exactly what a later restore of the same file writes.
+    """
+    meta = {"model_id": model_id, "enrichment": enrichment, "loader_rev": loader_revision()}
+    if ifc:
+        meta["source_ifc"] = str(ifc)
+        meta["source_sha256"] = sha256_file(Path(ifc))
+    meta = {k: v for k, v in meta.items() if v is not None}
+    header = export_graph(driver, out_path, meta)
+    write_meta(driver, {**meta, "fingerprint": header["fingerprint"], "cache_path": str(out_path)})
+    return header
+
+
 # -----------------------------------------------------------------------------
 # Restore
 # -----------------------------------------------------------------------------
@@ -331,16 +348,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     try:
         if args.cmd == "export":
-            meta = {"model_id": args.model_id, "enrichment": args.enrichment,
-                    "loader_rev": loader_revision()}
-            if args.ifc:
-                meta["source_ifc"] = str(args.ifc)
-                meta["source_sha256"] = sha256_file(args.ifc)
-            meta = {k: v for k, v in meta.items() if v is not None}
-            header = export_graph(driver, args.out, meta)
-            # The graph that was exported is now a known state; say so in it.
-            write_meta(driver, {**meta, "fingerprint": header["fingerprint"],
-                                "cache_path": str(args.out)})
+            header = export_with_meta(driver, args.out, args.model_id, args.enrichment, args.ifc)
             print(json.dumps(header["summary"]["totals"]), header["fingerprint"])
         elif args.cmd == "restore":
             header = restore_graph(driver, args.path)

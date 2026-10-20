@@ -140,10 +140,12 @@ CLAUDE.md
 GEMINI.md
 
 notebooks/*
-notebooks
 tasks
 
 *.ipynb
+# Tracked: holds no secrets (keys come from Colab Secrets), and Colab opens it
+# straight from GitHub.
+!notebooks/ifcbench_colab.ipynb
 
 # External comparison material (ASK-BIM artifacts, ~38 MB).
 coglioni_sardi/
