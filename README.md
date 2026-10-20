@@ -1094,6 +1094,37 @@ Labels starting with `_` are internal and never reach the vocabulary.
 | `data/ifcbench/cache/` | no | graph snapshots (`<model_id>.<state>.jsonl.gz`) |
 | `data/ifcbench/bundles/` | no | per-model bundles |
 
+### Running the questions (single-shot and agentic arms + IFC-Bench judge)
+
+One process next to Neo4j. For each model it restores the snapshot (or builds
+it by ETL if missing), builds the prompt context **from the live graph** (no
+bundle), runs every question × paradigm, and judges each answer with the
+IFC-Bench judge (Hellin et al.'s `EvaluateResponse`, GLM-4.7, all-four-Yes rule).
+
+```bash
+# Laptop / server (Docker): OPENROUTER_API_KEY in .env, then `docker compose up -d app`
+docker compose exec app python -m src.agent.run --model-id dental_clinic__arc --split train \
+  --llm openrouter:z-ai/glm-4.5-air --run clinic_glm45air_train
+# every test-split model
+docker compose exec app python -m src.agent.run --manifest-split test \
+  --llm openrouter:z-ai/glm-5.2 --run full_glm52
+```
+
+In **Colab**, open `notebooks/ifcbench_colab.ipynb`. It runs
+`scripts/colab/bootstrap.sh`, which installs Java + Neo4j 5.26 into the VM, so the
+database, the runner and a local model share one runtime. Snapshots and results
+live on Drive, so a dropped session resumes: completed cells are skipped.
+
+Results in `results/ifcbench/runs/<run>/`:
+- `episodes.jsonl`: every query, result, answer and judgement, with tokens and cost
+- `summary.json`: accuracy, abstentions and cost per paradigm and category
+- `context/<model_id>.txt`: the schema prompt the model saw
+- `config.json`: dataset commit and graph fingerprint per model
+
+Model specs: `openrouter:<id>`, `gemini:<id>`, `vllm:<id>` (`VLLM_BASE_URL`).
+The judge only sees the final answer, never the trace, so the prompts require
+every claim to cite its property or method.
+
 ---
 
 ## Configuration
