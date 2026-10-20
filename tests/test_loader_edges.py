@@ -41,9 +41,19 @@ def test_contains_edges_present(neo4j_driver):
 
 
 def test_has_opening_and_fills_present(neo4j_driver):
+    # Precondition-gated like the material-layer tests: a structural model
+    # (dental_clinic__str) has openings in slabs but no doors or windows, so it
+    # legitimately carries HAS_OPENING and no FILLS.
+    opening_nodes = _count(neo4j_driver, "MATCH (o:IfcOpeningElement) RETURN count(o) AS c")
+    if not opening_nodes:
+        pytest.skip("loaded model has no opening elements")
     openings = _count(neo4j_driver, "MATCH ()-[r:HAS_OPENING]->() RETURN count(r) AS c")
-    fills = _count(neo4j_driver, "MATCH ()-[r:FILLS]->() RETURN count(r) AS c")
-    assert openings > 0 and fills > 0
+    assert openings > 0, "opening elements exist but no HAS_OPENING edge was written"
+
+    fillers = _count(neo4j_driver, "MATCH (n) WHERE n:IfcDoor OR n:IfcWindow RETURN count(n) AS c")
+    if fillers:
+        fills = _count(neo4j_driver, "MATCH ()-[r:FILLS]->() RETURN count(r) AS c")
+        assert fills > 0, "doors/windows and openings exist but no FILLS edge was written"
 
 
 def test_is_of_type_present(neo4j_driver):
