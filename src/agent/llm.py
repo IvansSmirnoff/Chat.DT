@@ -66,7 +66,10 @@ class ChatClient:
     base_url: str
     api_key: Optional[str] = None
     temperature: float = 0.0
-    max_tokens: int = 4096
+    # GLM-4.5-air / GLM-4.7 are reasoning models: reasoning tokens count
+    # against max_tokens, and a short budget returns empty content. 8192 is
+    # Hellin's client setting (cobbie clients.baml).
+    max_tokens: int = 8192
     timeout_s: float = 180.0
     max_retries: int = 5
     extra_body: Dict[str, Any] = field(default_factory=dict)
