@@ -32,18 +32,8 @@ from typing import Any, Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.agent.context import build_graph_context
 from src.config import get_settings
-from src.constraints.ids_parser import parse_ids_file
-from src.constraints.value_sampler import (
-    generate_few_shot_examples,
-    sample_value_enumerations,
-)
-from src.constraints.vocabulary_merger import (
-    build_combined_vocabulary,
-    merge_graph_stats_into_vocabulary,
-)
-from src.etl.graph_cache import fingerprint, graph_summary, read_meta
-from src.eval.neo4j_exec import collect_graph_stats
 from scripts.create_model_dump import export_from_ifc
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -98,18 +88,15 @@ def build_bundle(
 ) -> Dict[str, Any]:
     """Assemble the bundle dict. IDS is optional — when omitted, the vocabulary
     is built from IFC alone and ``ids_schema`` is ``None`` (Setting 2 / Setting 4
-    fall back to soft constraints because there is no enforced vocabulary)."""
-    if ids_path is not None:
-        logger.info(f"Building vocabulary from {ids_path.name} + {ifc_path.name}")
-    else:
-        logger.info(f"Building vocabulary from {ifc_path.name} (no IDS)")
-    vocab = build_combined_vocabulary(ids_path=ids_path, ifc_path=ifc_path)
+    fall back to soft constraints because there is no enforced vocabulary).
 
-    ids_schema = None
-    if ids_path is not None:
-        logger.info(f"Parsing IDS: {ids_path}")
-        ids_schema = parse_ids_file(ids_path)
-
+    The graph-dependent part is :func:`src.agent.context.build_graph_context`,
+    the same object an in-process run builds; the bundle is that context plus
+    the Direct-QA model dump, serialised. ``graph`` records which graph it
+    describes, and the client compares its fingerprint with ``GET /graph/active``
+    before running, so a bundle built for one model cannot silently be decoded
+    against another.
+    """
     model_dump = []
     if include_model_dump:
         logger.info(f"Exporting model dump from {ifc_path}")
@@ -118,37 +105,7 @@ def build_bundle(
     logger.info(f"Connecting to Neo4j at {neo4j_uri}")
     driver = _open_driver(neo4j_uri, neo4j_user, neo4j_password)
     try:
-        # Which graph this bundle describes. The client compares the fingerprint
-        # with GET /graph/active before running, so a bundle built for one model
-        # cannot silently be decoded against another.
-        meta = read_meta(driver) or {}
-        live_fingerprint = fingerprint(graph_summary(driver))
-        if meta.get("fingerprint") not in (None, live_fingerprint):
-            logger.warning(
-                "Graph changed since it was exported/restored as %s; the bundle "
-                "records the live fingerprint %s", meta.get("model_id"), live_fingerprint[:12],
-            )
-        graph_identity = {
-            "model_id": meta.get("model_id"),
-            "enrichment": meta.get("enrichment"),
-            "loader_rev": meta.get("loader_rev"),
-            "fingerprint": live_fingerprint,
-        }
-
-        logger.info("Collecting graph stats")
-        graph_stats = collect_graph_stats(driver)
-
-        # Must run before value sampling / few-shot generation so both see the
-        # full label set.
-        merge_graph_stats_into_vocabulary(vocab, graph_stats)
-
-        logger.info("Sampling value enumerations from graph")
-        value_enumerations = sample_value_enumerations(driver, vocab)
-
-        logger.info("Generating graph-sourced few-shot examples")
-        few_shot_examples = generate_few_shot_examples(
-            driver, vocab, enumerations=value_enumerations,
-        )
+        ctx = build_graph_context(driver, ifc_path, ids_path)
     finally:
         driver.close()
 
@@ -158,13 +115,13 @@ def build_bundle(
             "ifc_file": ifc_path.name,
             "ids_file": ids_path.name if ids_path is not None else None,
         },
-        "graph": graph_identity,
-        "combined_vocabulary": vocab,
-        "ids_schema": ids_schema,
+        "graph": ctx.graph,
+        "combined_vocabulary": ctx.vocabulary,
+        "ids_schema": ctx.ids_schema,
         "model_dump": model_dump,
-        "graph_stats": graph_stats,
-        "value_enumerations": value_enumerations,
-        "few_shot_examples": few_shot_examples,
+        "graph_stats": ctx.graph_stats,
+        "value_enumerations": ctx.value_enumerations,
+        "few_shot_examples": ctx.few_shot_examples,
         "neo4j": {
             "uri_hint": neo4j_uri,
         },

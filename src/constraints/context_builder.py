@@ -37,13 +37,9 @@ DEFAULT_FEW_SHOT_EXAMPLES: List[Dict[str, str]] = []
 # Prompt Templates
 # =============================================================================
 
-SYSTEM_PROMPT_TEMPLATE = """You are a Neo4j Cypher query generator for Building Information Modeling (BIM) data.
-
-Your task is to convert natural language questions into valid Cypher queries that can be executed against a Neo4j database containing IFC building data.
-
-{schema_section}
-{known_values_section}
-## Query Guidelines
+# Shared with the agent prompts (src/agent/prompts.py): every rule here was
+# paid for by a silent zero-row failure on a real model.
+QUERY_GUIDELINES = """## Query Guidelines
 
 1. **MATCH clause**: Use `MATCH (n:EntityLabel)` where EntityLabel is one of the available entities
 2. **WHERE clause**: Filter using property comparisons: `n.PropertyName = 'value'` or `n.PropertyName = true/false`
@@ -60,7 +56,16 @@ Your task is to convert natural language questions into valid Cypher queries tha
 8. **For "which X have no Y", never MATCH the Y**: match X alone and exclude the
    pattern in WHERE, e.g. `MATCH (s:IfcSpace) WHERE NOT (s)-[:BOUNDED_BY]->(:IfcWindow)`.
    Matching `(s)-[:BOUNDED_BY]->(w:IfcWindow)` and *then* excluding the same pattern
-   is self-contradictory and always returns nothing
+   is self-contradictory and always returns nothing"""
+
+
+SYSTEM_PROMPT_TEMPLATE = """You are a Neo4j Cypher query generator for Building Information Modeling (BIM) data.
+
+Your task is to convert natural language questions into valid Cypher queries that can be executed against a Neo4j database containing IFC building data.
+
+{schema_section}
+{known_values_section}
+{query_guidelines}
 
 ## Constraint Rules
 
@@ -195,6 +200,7 @@ class ContextBuilder:
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
             schema_section=schema_section,
             known_values_section=known_values_section,
+            query_guidelines=QUERY_GUIDELINES,
             constraint_rules=constraint_rules,
             examples_section=examples_section,
         )
