@@ -1045,9 +1045,54 @@ docker compose exec app python scripts/build_bundle.py \
 ```
 
 The bundle carries `combined_vocabulary`, `ids_schema` (or `null`), `model_dump`,
-and `graph_stats`. The Colab side rebuilds the Python objects via
-`CombinedVocabulary.from_dict` / `IDSSchema.from_dict` — Bolt is never used
-from Colab, only the authenticated API on port 8000.
+`graph_stats` and, since 2026-10, `graph` (`model_id`, `fingerprint`). The Colab
+side rebuilds the Python objects via `CombinedVocabulary.from_dict` /
+`IDSSchema.from_dict` — Bolt is never used from Colab, only the authenticated
+API on port 8000. Before running, the client compares the bundle fingerprint
+with `GET /graph/active` and refuses a bundle built for a different graph.
+
+---
+
+## IFC-Bench: one model at a time
+
+IFC-Bench (Hellin et al., AutCon 2026) asks 1,026 questions over 31 IFC files.
+Neo4j Community holds one database, so each file is loaded **once**, snapshotted,
+and restored in seconds when its questions run. Questions target one discipline
+file each (`dental_clinic/str.ifc`, not a merged model), so no dedup pass is needed.
+
+```bash
+# 1. Questions + IFC files, pinned to a dataset commit, sha256-verified
+docker compose exec app python scripts/ifcbench/fetch.py --project dental_clinic   # or --split test
+# 2. Manifest + one question slice per file (data/ifcbench/{manifest.yaml,testsets/})
+docker compose exec app python scripts/ifcbench/build_testset.py --split test
+# 3. ETL once, then snapshot the live graph
+docker compose exec app python -m src.etl.loader data/ifcbench/raw/projects/dental_clinic/arc.ifc
+docker compose exec app python -m src.etl.graph_cache export \
+  data/ifcbench/cache/dental_clinic__arc.base.jsonl.gz \
+  --model-id dental_clinic__arc --ifc data/ifcbench/raw/projects/dental_clinic/arc.ifc
+# 4. Afterwards: restore (wipes the DB, verifies the fingerprint) / inspect
+docker compose exec app python -m src.etl.graph_cache restore data/ifcbench/cache/dental_clinic__arc.base.jsonl.gz
+docker compose exec app python -m src.etl.graph_cache info
+```
+
+Through the API, `POST /graph/activate {"model_id": "dental_clinic__arc"}` does the
+restore and rebuilds the API vocabulary. It takes the separate `API_ADMIN_TOKEN`
+and returns 503 while that is unset, so the client token cannot wipe the database.
+`GET /graph/active` (client token) reports the loaded model and live fingerprint.
+
+The **fingerprint** is a sha256 over label counts, relationship-type counts,
+totals and the property keys *in use*. It deliberately does not use
+`db.propertyKeys()`: that token store never shrinks, so it would leak keys
+across model switches. A `(:_GraphMeta)` node records which model is loaded.
+Labels starting with `_` are internal and never reach the vocabulary.
+
+| Path | In git | What |
+|---|---|---|
+| `data/ifcbench/manifest.yaml` | yes | one entry per IFC file: sha256, schema, question counts, paths |
+| `data/ifcbench/testsets/*.jsonl` | yes | questions + free-text ground truth (CC-BY-4.0, attributed) |
+| `data/ifcbench/raw/` | no | downloads |
+| `data/ifcbench/cache/` | no | graph snapshots (`<model_id>.<state>.jsonl.gz`) |
+| `data/ifcbench/bundles/` | no | per-model bundles |
 
 ---
 
