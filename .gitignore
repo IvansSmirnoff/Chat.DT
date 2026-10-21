@@ -154,3 +154,8 @@ coglioni_sardi/
 data/ifcbench/raw/
 data/ifcbench/cache/
 data/ifcbench/bundles/
+
+# Not for a public repo: collaborator material (clinic IDS, Q/A sheet, Solibri
+# report) and Building 15 sensor serials (regenerate with scripts/bind_sensors.py).
+data/clinic/
+data/sensor_binding_b15.json
