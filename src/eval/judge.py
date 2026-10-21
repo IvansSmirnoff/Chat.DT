@@ -22,8 +22,8 @@ by an equivalent JSON schema with the same field descriptions (``schemas.baml``)
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
 
 from src.agent.actions import first_json_object
 from src.agent.llm import ChatClient, Completion, LLMError, client_from_spec
@@ -252,6 +252,7 @@ class JudgeResult:
     cost_usd: Optional[float] = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    providers: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -286,9 +287,10 @@ def parse_judgement(text: str) -> Dict[str, Any]:
             "justification": str(obj.get("justification") or "")}
 
 
-def make_judge(spec: str = DEFAULT_JUDGE) -> ChatClient:
-    # Hellin's judge client: temperature 0.1, max_tokens 8192.
-    return client_from_spec(spec, temperature=0.1, max_tokens=8192)
+def make_judge(spec: str = DEFAULT_JUDGE, provider_order: Optional[List[str]] = None) -> ChatClient:
+    # Hellin's judge client: temperature 0.1, max_tokens 8192, thinking at the
+    # model's default.
+    return client_from_spec(spec, provider_order=provider_order, temperature=0.1, max_tokens=8192)
 
 
 def judge_answer(client: ChatClient, *, question: str, category: int,
@@ -300,16 +302,20 @@ def judge_answer(client: ChatClient, *, question: str, category: int,
             system_response=answer)},
     ]
     cost, prompt_tokens, completion_tokens = 0.0, 0, 0
+    providers: List[str] = []
     for attempt in range(PARSE_RETRIES + 1):
         completion: Completion = client.complete(messages)
         cost += completion.cost_usd or 0.0
         prompt_tokens += completion.prompt_tokens
         completion_tokens += completion.completion_tokens
+        if completion.provider and completion.provider not in providers:
+            providers.append(completion.provider)
         try:
             parsed = parse_judgement(completion.text)
             break
         except JudgeParseError as exc:
-            if attempt == PARSE_RETRIES:
+            # Same budget, same cut-off: a truncated verdict is not re-asked.
+            if attempt == PARSE_RETRIES or completion.truncated:
                 raise
             messages = messages + [
                 {"role": "assistant", "content": completion.text},
@@ -318,7 +324,8 @@ def judge_answer(client: ChatClient, *, question: str, category: int,
             ]
     verdict = derive_verdict(parsed["abstention"], parsed)
     return JudgeResult(**parsed, verdict=verdict, judge=client.spec, cost_usd=cost,
-                       prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+                       prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                       providers=providers)
 
 
 __all__ = ["JudgeResult", "derive_verdict", "judge_answer", "make_judge",

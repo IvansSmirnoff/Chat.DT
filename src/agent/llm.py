@@ -43,6 +43,12 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
 
 RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
+# Thinking is a run factor. ``default`` sends nothing (the model's own default:
+# on for every GLM/MiniMax backbone used here); ``on``/``off`` force it through
+# OpenRouter's unified ``reasoning`` parameter. Effort levels are not offered:
+# GLM-4.5-air's providers ignore them (measured, results/ifcbench/probe/).
+REASONING_MODES = ("default", "on", "off")
+
 
 class LLMError(RuntimeError):
     pass
@@ -53,11 +59,18 @@ class Completion:
     text: str
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reasoning_tokens: int = 0
     cost_usd: Optional[float] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     latency_s: float = 0.0
     finish_reason: Optional[str] = None
+
+    @property
+    def truncated(self) -> bool:
+        """The reply hit max_tokens. With thinking on the reasoning counts
+        against the same budget, so the visible text is usually empty."""
+        return self.finish_reason == "length"
 
 
 @dataclass
@@ -65,7 +78,8 @@ class ChatClient:
     model: str
     base_url: str
     api_key: Optional[str] = None
-    temperature: float = 0.0
+    # Hellin's setting for every backbone and the judge (cobbie clients.baml).
+    temperature: float = 0.1
     # GLM-4.5-air / GLM-4.7 are reasoning models: reasoning tokens count
     # against max_tokens, and a short budget returns empty content. 8192 is
     # Hellin's client setting (cobbie clients.baml).
@@ -74,6 +88,11 @@ class ChatClient:
     max_retries: int = 5
     extra_body: Dict[str, Any] = field(default_factory=dict)
     spec: str = ""
+    reasoning: str = "default"
+
+    def __post_init__(self) -> None:
+        if self.reasoning not in REASONING_MODES:
+            raise ValueError(f"reasoning must be one of {REASONING_MODES}: {self.reasoning!r}")
 
     def complete(self, messages: List[Dict[str, str]], **overrides: Any) -> Completion:
         body: Dict[str, Any] = {
@@ -84,6 +103,8 @@ class ChatClient:
             **self.extra_body,
             **overrides,
         }
+        if self.reasoning != "default":
+            body.setdefault("reasoning", {"enabled": self.reasoning == "on"})
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -124,6 +145,7 @@ class ChatClient:
             text=message.get("content") or "",
             prompt_tokens=usage.get("prompt_tokens") or 0,
             completion_tokens=usage.get("completion_tokens") or 0,
+            reasoning_tokens=(usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0,
             cost_usd=usage.get("cost"),
             provider=data.get("provider"),
             model=data.get("model"),
@@ -132,8 +154,14 @@ class ChatClient:
         )
 
 
-def client_from_spec(spec: str, **kwargs: Any) -> ChatClient:
-    """``openrouter:z-ai/glm-4.5-air`` -> a configured :class:`ChatClient`."""
+def client_from_spec(spec: str, provider_order: Optional[List[str]] = None,
+                     **kwargs: Any) -> ChatClient:
+    """``openrouter:z-ai/glm-4.5-air`` -> a configured :class:`ChatClient`.
+
+    ``provider_order`` pins the OpenRouter provider(s), e.g. ``["z-ai"]``.
+    ``allow_fallbacks: false`` alone does not pin anything: unpinned calls were
+    measured landing on three providers within one probe.
+    """
     provider, sep, model = spec.partition(":")
     if not sep or provider not in PROVIDERS:
         raise ValueError(f"Model spec must be <provider>:<model> with provider in {sorted(PROVIDERS)}: {spec!r}")
@@ -151,5 +179,9 @@ def client_from_spec(spec: str, **kwargs: Any) -> ChatClient:
         # provider mid-run (different quantisations answer differently).
         extra.setdefault("usage", {"include": True})
         extra.setdefault("provider", {"allow_fallbacks": False})
+        if provider_order:
+            extra["provider"] = {**extra["provider"], "order": list(provider_order)}
+    elif provider_order or kwargs.get("reasoning", "default") != "default":
+        raise ValueError(f"{spec}: provider pinning and reasoning on/off are OpenRouter options")
     return ChatClient(model=model, base_url=base_url, api_key=api_key,
                       extra_body=extra, spec=spec, **kwargs)

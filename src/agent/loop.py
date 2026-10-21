@@ -12,6 +12,12 @@ Both return an :class:`Episode` holding every LLM call's tokens, cost and
 latency and every query's result, so cost and accuracy come from one record.
 An infrastructure failure (the LLM API, not the model) is ``status="error"``
 and is meant to be re-run, not scored.
+
+A reply cut off at max_tokens is the model's doing, not the API's, and asking
+again with the same budget only repeats it (GLM-4.5-air with thinking on spends
+any budget, 32k measured, imagining query results). So it is never re-asked: in
+single-shot it ends the episode as a ``token_limit`` abstention, the analogue of
+the agent's ``step_limit``; in the agentic loop it costs a step.
 """
 
 from __future__ import annotations
@@ -31,6 +37,14 @@ RESULT_CHARS = 4000        # observation shown for recent steps
 OLD_RESULT_CHARS = 600     # ... and for steps older than KEEP_FULL
 KEEP_FULL = 5
 STEP_LIMIT_ANSWER = "I cannot determine the answer: the step limit was reached before sufficient information was gathered."
+TOKEN_LIMIT_ANSWER = "I cannot determine the answer: the reply was cut off at the token limit before it was complete."
+PARSE_ERROR_ANSWER = "I cannot determine the answer: no usable reply was produced."
+NO_QUERY_RESULT = "(no query was run: the query writer returned no query)"
+TRUNCATED_STEP = "it was cut off at the token limit before any JSON action; keep your reasoning short and reply with the action"
+
+
+class TokenLimit(Exception):
+    """A reply hit max_tokens before it contained a usable action."""
 
 
 @dataclass
@@ -50,23 +64,30 @@ class Episode:
     paradigm: str
     model: str
     answer: str = ""
-    status: str = "ok"            # ok | step_limit | error
+    status: str = "ok"            # ok | step_limit | token_limit | parse_error | error
     error: Optional[str] = None
     steps: List[Step] = field(default_factory=list)
     llm_calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reasoning_tokens: int = 0
     cost_usd: float = 0.0
     providers: List[str] = field(default_factory=list)
+    calls: List[Dict[str, Any]] = field(default_factory=list)
     wall_s: float = 0.0
 
-    def account(self, c: Completion) -> None:
+    def account(self, c: Completion, role: str) -> None:
         self.llm_calls += 1
         self.prompt_tokens += c.prompt_tokens
         self.completion_tokens += c.completion_tokens
+        self.reasoning_tokens += c.reasoning_tokens
         self.cost_usd += c.cost_usd or 0.0
         if c.provider and c.provider not in self.providers:
             self.providers.append(c.provider)
+        self.calls.append({"role": role, "prompt_tokens": c.prompt_tokens,
+                           "completion_tokens": c.completion_tokens,
+                           "reasoning_tokens": c.reasoning_tokens, "finish": c.finish_reason,
+                           "provider": c.provider, "latency_s": round(c.latency_s, 2)})
 
     @property
     def final_cypher(self) -> str:
@@ -87,15 +108,21 @@ def _clip(text: str, limit: int) -> str:
 
 
 def _ask(llm: ChatClient, messages: List[Dict[str, str]], episode: Episode,
-         allowed: tuple) -> Action:
-    """One LLM call, re-asked up to PARSE_RETRIES times if the JSON is unusable."""
+         allowed: tuple, role: str) -> Action:
+    """One LLM call, re-asked up to PARSE_RETRIES times if the JSON is unusable.
+
+    A truncated reply is not re-asked (see the module docstring).
+    """
     messages = list(messages)
     for attempt in range(PARSE_RETRIES + 1):
         completion = llm.complete(messages)
-        episode.account(completion)
+        episode.account(completion, role)
         try:
             return parse_action(completion.text, allowed)
         except ActionParseError as exc:
+            if completion.truncated:
+                raise TokenLimit(f"{role} reply truncated at the token limit "
+                                 f"({completion.completion_tokens} completion tokens)") from exc
             if attempt == PARSE_RETRIES:
                 raise
             messages += [
@@ -111,14 +138,30 @@ def single_shot(question_id: int, question: str, schema: str,
     episode = Episode(question_id, question, "single_shot", llm.spec or llm.model)
     start = time.monotonic()
     try:
-        gen = _ask(llm, prompts.static_generator_messages(question, schema), episode, ("cypher",))
-        result = tools.run_cypher(gen.cypher)
-        observation = result.render()
-        episode.steps.append(Step(1, gen.thoughts, gen.cypher, result.to_dict(), observation))
-        final = _ask(llm, prompts.synthesizer_messages(
-            question, gen.cypher, _clip(observation, RESULT_CHARS)), episode, ("final_answer",))
-        episode.answer = final.answer
-    except (LLMError, ActionParseError) as exc:
+        # The prompt asks for a query. A generator that answers outright is taken
+        # at its word; one that declines (no query, no answer) leaves the
+        # synthesiser to answer from nothing, as when Hellin's code fails to run.
+        gen = _ask(llm, prompts.static_generator_messages(question, schema), episode,
+                   ("cypher", "final_answer", "decline"), "generator")
+        if gen.kind == "final_answer":
+            episode.answer = gen.answer
+        else:
+            if gen.kind == "cypher":
+                result = tools.run_cypher(gen.cypher)
+                observation = result.render()
+                episode.steps.append(Step(1, gen.thoughts, gen.cypher, result.to_dict(), observation))
+            else:
+                observation = NO_QUERY_RESULT
+            final = _ask(llm, prompts.synthesizer_messages(
+                question, gen.cypher, _clip(observation, RESULT_CHARS)), episode,
+                ("final_answer",), "synthesizer")
+            episode.answer = final.answer
+    except TokenLimit as exc:
+        episode.status, episode.answer, episode.error = "token_limit", TOKEN_LIMIT_ANSWER, str(exc)
+    except ActionParseError as exc:
+        # The model's failure after PARSE_RETRIES re-asks: scored, not re-run.
+        episode.status, episode.answer, episode.error = "parse_error", PARSE_ERROR_ANSWER, str(exc)
+    except LLMError as exc:
         episode.status, episode.error = "error", f"{type(exc).__name__}: {exc}"
     episode.wall_s = time.monotonic() - start
     return episode
@@ -153,12 +196,13 @@ def agentic(question_id: int, question: str, schema: str,
                 max_steps=max_steps, max_rows=tools.max_rows, timeout=tools.timeout_s,
             )
             completion = llm.complete(messages)
-            episode.account(completion)
+            episode.account(completion, "agent")
             try:
                 action = parse_action(completion.text)
             except ActionParseError as exc:
                 # Costs a step, like any other wasted action; the next prompt says why.
-                episode.steps.append(Step(index, parse_error=str(exc)))
+                reason = TRUNCATED_STEP if completion.truncated else str(exc)
+                episode.steps.append(Step(index, parse_error=reason))
                 continue
             if action.kind == "final_answer":
                 episode.answer = action.answer

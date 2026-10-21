@@ -53,7 +53,10 @@ class ScriptedLLM:
 
     def complete(self, messages, **_):
         self.calls.append(messages)
-        return Completion(text=self.replies.pop(0), prompt_tokens=100,
+        reply = self.replies.pop(0)
+        if isinstance(reply, Completion):
+            return reply
+        return Completion(text=reply, prompt_tokens=100,
                           completion_tokens=10, cost_usd=0.001, provider="P")
 
 
@@ -125,6 +128,82 @@ def test_agentic_parse_error_costs_a_step_and_step_limit_abstains():
     assert "could not be parsed" in llm.calls[1][1]["content"]
 
 
+def _cut_off():
+    """What GLM-4.5-air returns when its thinking eats the whole budget."""
+    return Completion(text="", prompt_tokens=100, completion_tokens=8192,
+                      reasoning_tokens=8192, cost_usd=0.007, provider="P", finish_reason="length")
+
+
+def test_single_shot_records_every_call():
+    llm = ScriptedLLM([_act(cypher="MATCH (d:IfcDoor) RETURN count(d)"), _act(answer="254 doors.")])
+    ep = loop.single_shot(124, "How many doors?", "SCHEMA", llm, FakeTools())
+    assert [c["role"] for c in ep.calls] == ["generator", "synthesizer"]
+    assert ep.calls[0]["completion_tokens"] == 10 and ep.calls[0]["provider"] == "P"
+
+
+def test_single_shot_truncated_generator_is_a_token_limit_abstention_not_reasked():
+    llm = ScriptedLLM([_cut_off()])
+    tools = FakeTools()
+    ep = loop.single_shot(93, "Insulation thickness?", "SCHEMA", llm, tools)
+    assert ep.status == "token_limit" and ep.answer == loop.TOKEN_LIMIT_ANSWER
+    assert ep.llm_calls == 1 and tools.queries == []
+    assert ep.reasoning_tokens == 8192 and ep.calls[0]["finish"] == "length"
+    assert "generator" in ep.error
+
+
+def test_single_shot_truncated_but_complete_reply_is_used():
+    # A reply can hit the limit after its JSON closed; it parses, so it counts.
+    llm = ScriptedLLM([
+        Completion(text=_act(cypher="RETURN 1"), finish_reason="length"),
+        _act(answer="1 (from RETURN 1)."),
+    ])
+    ep = loop.single_shot(1, "q", "SCHEMA", llm, FakeTools())
+    assert ep.status == "ok" and ep.llm_calls == 2
+
+
+def test_single_shot_generator_may_answer_directly():
+    llm = ScriptedLLM([_act(action="final_answer", answer="I cannot determine X: not in the model.")])
+    tools = FakeTools()
+    ep = loop.single_shot(130, "q", "SCHEMA", llm, tools)
+    assert ep.status == "ok" and ep.answer.startswith("I cannot determine")
+    assert ep.llm_calls == 1 and tools.queries == [] and ep.steps == []
+
+
+def test_single_shot_decline_is_synthesised_from_no_query():
+    llm = ScriptedLLM([
+        _act(thoughts="no property describes the structural concept", cypher=""),
+        _act(answer="I cannot determine the structural concept: it is not in the model."),
+    ])
+    tools = FakeTools()
+    ep = loop.single_shot(133, "Structural concept?", "SCHEMA", llm, tools)
+    assert ep.status == "ok" and ep.answer.startswith("I cannot determine")
+    assert tools.queries == [] and ep.steps == []
+    synth_user = llm.calls[1][1]["content"]
+    assert "(none)" in synth_user and loop.NO_QUERY_RESULT in synth_user
+
+
+def test_single_shot_persistent_garbage_is_a_scored_parse_error():
+    llm = ScriptedLLM(["no json here"] * (loop.PARSE_RETRIES + 1))
+    ep = loop.single_shot(1, "q", "SCHEMA", llm, FakeTools())
+    assert ep.status == "parse_error" and ep.answer == loop.PARSE_ERROR_ANSWER
+    assert ep.llm_calls == loop.PARSE_RETRIES + 1
+
+
+def test_decline_is_only_parsed_when_allowed():
+    reply = '{"thoughts": "nothing to query", "cypher": ""}'
+    assert parse_action(reply, ("cypher", "final_answer", "decline")).kind == "decline"
+    with pytest.raises(ActionParseError):
+        parse_action(reply)
+
+
+def test_agentic_truncated_step_costs_a_step_and_says_why():
+    llm = ScriptedLLM([_cut_off(), _act(action="final_answer", answer="42 mm (from LayerThickness).")])
+    ep = loop.agentic(93, "q", "SCHEMA", llm, FakeTools())
+    assert ep.status == "ok" and ep.answer.startswith("42 mm")
+    assert ep.steps[0].parse_error == loop.TRUNCATED_STEP
+    assert "token limit" in llm.calls[1][1]["content"]
+
+
 def test_query_result_render_reports_truncation_and_errors():
     r = QueryResult(query="q", columns=["n"], rows=[[1], [2]], total_rows=5)
     text = r.render()
@@ -168,3 +247,59 @@ def test_client_does_not_retry_client_errors(monkeypatch):
     with pytest.raises(LLMError, match="HTTP 400"):
         _client().complete([{"role": "user", "content": "x"}])
     assert len(calls) == 1
+
+
+def test_client_parses_reasoning_tokens_and_truncation(monkeypatch):
+    monkeypatch.setattr("src.agent.llm.httpx.post", lambda *a, **k: httpx.Response(200, json={
+        "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+        "usage": {"prompt_tokens": 7, "completion_tokens": 8192,
+                  "completion_tokens_details": {"reasoning_tokens": 8192}},
+    }))
+    c = _client().complete([{"role": "user", "content": "x"}])
+    assert c.truncated and c.reasoning_tokens == 8192 and c.text == ""
+
+
+def test_client_from_spec_pins_provider_and_forces_reasoning(monkeypatch):
+    from src.agent.llm import client_from_spec
+
+    bodies = []
+
+    def post(*a, json=None, **k):
+        bodies.append(json)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setattr("src.agent.llm.httpx.post", post)
+    client_from_spec("openrouter:z-ai/glm-4.5-air", provider_order=["z-ai"],
+                     reasoning="off").complete([{"role": "user", "content": "x"}])
+    client_from_spec("openrouter:z-ai/glm-4.5-air").complete([{"role": "user", "content": "x"}])
+    forced, default = bodies
+    assert forced["reasoning"] == {"enabled": False}
+    assert forced["provider"] == {"allow_fallbacks": False, "order": ["z-ai"]}
+    assert forced["temperature"] == 0.1
+    assert "reasoning" not in default and "order" not in default["provider"]
+
+
+def test_reasoning_and_pinning_are_refused_off_openrouter(monkeypatch):
+    from src.agent.llm import client_from_spec
+
+    monkeypatch.setenv("VLLM_BASE_URL", "http://vllm.invalid/v1")
+    with pytest.raises(ValueError, match="OpenRouter"):
+        client_from_spec("vllm:Qwen/Qwen2.5-7B-Instruct", reasoning="off")
+    with pytest.raises(ValueError, match="OpenRouter"):
+        client_from_spec("vllm:Qwen/Qwen2.5-7B-Instruct", provider_order=["x"])
+    with pytest.raises(ValueError, match="reasoning"):
+        ChatClient(model="m", base_url="http://x", reasoning="low")
+
+
+def test_run_refuses_to_resume_with_other_settings(monkeypatch, tmp_path):
+    from src.agent import run
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    (tmp_path / "r").mkdir()
+    (tmp_path / "r" / "config.json").write_text(json.dumps({"settings": {"reasoning": "on"}}))
+    with pytest.raises(SystemExit):
+        run.main(["--model-id", "dental_clinic__arc", "--split", "train", "--no-judge",
+                  "--llm", "openrouter:z-ai/glm-4.5-air", "--reasoning", "off",
+                  "--run", "r", "--out-root", str(tmp_path),
+                  "--manifest", "data/ifcbench/manifest.yaml"])

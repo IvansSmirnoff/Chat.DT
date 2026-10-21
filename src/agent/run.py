@@ -14,11 +14,14 @@ Results go to ``results/ifcbench/runs/<run>/``:
     summary.json             accuracy / abstention / cost per paradigm and category
 
 Re-running the same command resumes: cells already in ``episodes.jsonl`` with a
-non-error status are skipped, so a dropped Colab session loses nothing.
+non-error status are skipped, so a dropped Colab session loses nothing. The
+LLM settings (backbone, reasoning, providers, sampling) are stamped into
+``config.json`` and a resume with different ones is refused: one run directory
+is one experimental cell.
 
 Usage:
     python -m src.agent.run --model-id dental_clinic__arc --split train \\
-        --llm openrouter:z-ai/glm-4.5-air --run clinic_smoke
+        --llm openrouter:z-ai/glm-4.5-air --provider z-ai --reasoning off --run clinic_smoke
     python -m src.agent.run --manifest-split test --run full_glm45air ...
 """
 
@@ -39,7 +42,7 @@ from neo4j import GraphDatabase
 
 from src.agent import loop
 from src.agent.context import build_graph_context
-from src.agent.llm import client_from_spec
+from src.agent.llm import REASONING_MODES, client_from_spec
 from src.agent.tools import GraphTools
 from src.config import get_settings
 from src.etl.graph_cache import fingerprint, graph_summary, read_header, restore_graph
@@ -150,6 +153,12 @@ def summarise(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             "judge_cost_usd": round(sum(r["judgement"].get("cost_usd") or 0 for r in rs), 4),
             "mean_wall_s": round(sum(r["episode"]["wall_s"] for r in rs) / n, 1) if n else None,
             "step_limit": sum(r["episode"]["status"] == "step_limit" for r in rs),
+            "token_limit": sum(r["episode"]["status"] == "token_limit" for r in rs),
+            "parse_error": sum(r["episode"]["status"] == "parse_error" for r in rs),
+            "truncated_calls": sum(c.get("finish") == "length"
+                                   for r in rs for c in r["episode"].get("calls", [])),
+            "mean_reasoning_tokens": round(
+                sum(r["episode"].get("reasoning_tokens", 0) for r in rs) / n) if n else None,
         }
     return cells
 
@@ -167,7 +176,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--paradigm", choices=sorted(PARADIGMS), action="append",
                    help="Default: both")
     p.add_argument("--llm", required=True, help="e.g. openrouter:z-ai/glm-4.5-air")
+    p.add_argument("--reasoning", choices=REASONING_MODES, default="default",
+                   help="Backbone thinking: model default, or forced on/off (a run factor)")
+    p.add_argument("--provider", help="Pin the backbone's OpenRouter provider(s), comma-separated, e.g. z-ai")
     p.add_argument("--judge", default=DEFAULT_JUDGE, help=f"Default: {DEFAULT_JUDGE}")
+    p.add_argument("--judge-provider", help="Pin the judge's OpenRouter provider(s), e.g. z-ai")
     p.add_argument("--no-judge", action="store_true")
     p.add_argument("--run", required=True, help="Run name (results/ifcbench/runs/<run>)")
     p.add_argument("--state", default="base", help="Graph state snapshot to use")
@@ -194,8 +207,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         entries = [m for m in manifest["models"] if m["questions"][args.manifest_split]]
     paradigms = args.paradigm or ["single_shot", "agentic"]
 
-    llm = client_from_spec(args.llm)
-    judge = None if args.no_judge else make_judge(args.judge)
+    def providers(value: Optional[str]) -> Optional[List[str]]:
+        return [v.strip() for v in value.split(",") if v.strip()] if value else None
+
+    if not args.provider:
+        logger.warning("No --provider: OpenRouter may serve calls from different providers")
+    llm = client_from_spec(args.llm, provider_order=providers(args.provider),
+                           reasoning=args.reasoning)
+    judge = None if args.no_judge else make_judge(args.judge, providers(args.judge_provider))
 
     out = args.out_root / args.run
     (out / "context").mkdir(parents=True, exist_ok=True)
@@ -206,9 +225,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "dataset": manifest["dataset"], "models": {},
     }
-    config.update({"llm": args.llm, "judge": None if args.no_judge else args.judge,
-                   "paradigms": paradigms, "split": args.split, "state": args.state,
-                   "max_steps": args.max_steps})
+    settings_stamp = {
+        "llm": args.llm, "reasoning": args.reasoning, "provider": providers(args.provider),
+        "temperature": llm.temperature, "max_tokens": llm.max_tokens,
+        "judge": None if args.no_judge else args.judge,
+        "judge_provider": providers(args.judge_provider),
+        "state": args.state, "max_steps": args.max_steps,
+    }
+    if config_path.exists() and config.get("settings") != settings_stamp:
+        p.error(f"{out} was run with other settings; use a new --run.\n"
+                f"  stored: {config.get('settings')}\n  now:    {settings_stamp}")
+    config.update({"settings": settings_stamp, "llm": args.llm,
+                   "judge": settings_stamp["judge"], "paradigms": paradigms,
+                   "split": args.split, "state": args.state, "max_steps": args.max_steps})
 
     driver = GraphDatabase.driver(settings.neo4j_uri,
                                   auth=(settings.neo4j_user, settings.neo4j_password_value))

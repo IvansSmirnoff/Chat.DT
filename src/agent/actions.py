@@ -24,7 +24,7 @@ class ActionParseError(ValueError):
 
 @dataclass
 class Action:
-    kind: str  # "cypher" | "final_answer"
+    kind: str  # "cypher" | "final_answer" | "decline"
     thoughts: str = ""
     cypher: str = ""
     answer: str = ""
@@ -52,10 +52,18 @@ def first_json_object(text: str) -> Optional[Dict[str, Any]]:
 
 
 def parse_action(text: str, allowed: tuple = ("cypher", "final_answer")) -> Action:
-    """Parse an agent step. A bare ``cypher``/``answer`` object implies its kind."""
+    """Parse an agent step. A bare ``cypher``/``answer`` object implies its kind.
+
+    ``decline`` is only for callers that allow it (the single-shot generator): a
+    well-formed reply with neither a query nor an answer, which is how a model
+    says it finds nothing to query (``{"thoughts": "...", "cypher": ""}``).
+    """
     obj = first_json_object(text or "")
     if obj is None:
         raise ActionParseError("no JSON object found in the reply")
+    if ("decline" in allowed and not str(obj.get("cypher") or "").strip()
+            and not str(obj.get("answer") or "").strip()):
+        return Action(kind="decline", thoughts=str(obj.get("thoughts") or ""))
     kind = str(obj.get("action") or "").strip().lower()
     if not kind:
         kind = "cypher" if obj.get("cypher") else "final_answer" if obj.get("answer") else ""

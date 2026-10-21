@@ -1104,11 +1104,25 @@ IFC-Bench judge (Hellin et al.'s `EvaluateResponse`, GLM-4.7, all-four-Yes rule)
 ```bash
 # Laptop / server (Docker): OPENROUTER_API_KEY in .env, then `docker compose up -d app`
 docker compose exec app python -m src.agent.run --model-id dental_clinic__arc --split train \
-  --llm openrouter:z-ai/glm-4.5-air --run clinic_glm45air_train
+  --llm openrouter:z-ai/glm-4.5-air --provider z-ai --reasoning off --judge-provider z-ai \
+  --run clinic_glm45air_train_nothink
 # every test-split model
 docker compose exec app python -m src.agent.run --manifest-split test \
-  --llm openrouter:z-ai/glm-5.2 --run full_glm52
+  --llm openrouter:z-ai/glm-5.2 --provider <provider> --reasoning on --judge-provider z-ai \
+  --run full_glm52_think
 ```
+
+- `--reasoning on|off` is a run factor, applied to every call of both arms;
+  `default` sends nothing and leaves thinking at the model's own default (on for
+  the GLM/MiniMax backbones). With thinking on, GLM-4.5-air's single-shot generator
+  imagines query results in its reasoning until any budget runs out (measured up to
+  32k tokens); glm-5.2 and minimax-m3 finish in 1–1.6k.
+- A reply cut off at `max_tokens` (8192, Hellin's) is never re-asked: single-shot
+  ends as a `token_limit` abstention (the analogue of the agent's `step_limit`), and
+  in the agentic loop it costs a step. `summary.json` counts both.
+- `--provider` / `--judge-provider` pin OpenRouter providers; unpinned calls were
+  seen spread across three providers in one probe. The settings are stamped into
+  `config.json`, and resuming a run with different settings is refused.
 
 In **Colab**, open `notebooks/ifcbench_colab.ipynb`. It runs
 `scripts/colab/bootstrap.sh`, which installs Java + Neo4j 5.26 into the VM, so the
