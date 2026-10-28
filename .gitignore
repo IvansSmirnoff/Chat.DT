@@ -146,6 +146,9 @@ tasks
 # Tracked: holds no secrets (keys come from Colab Secrets), and Colab opens it
 # straight from GitHub.
 !notebooks/ifcbench_colab.ipynb
+# One ready-to-run notebook per run, same rules as above.
+!notebooks/runs/
+!notebooks/runs/run_*.ipynb
 
 # External comparison material (ASK-BIM artifacts, ~38 MB).
 coglioni_sardi/
