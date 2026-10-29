@@ -44,6 +44,7 @@ STEP_LIMIT_ANSWER = "I cannot determine the answer: the step limit was reached b
 TOKEN_LIMIT_ANSWER = "I cannot determine the answer: the reply was cut off at the token limit before it was complete."
 PARSE_ERROR_ANSWER = "I cannot determine the answer: no usable reply was produced."
 NO_QUERY_RESULT = "(no query was run: the query writer returned no query)"
+REPLY_CHARS = 2000         # of an unusable reply, kept in the record for diagnosis
 TRUNCATED_STEP = "it was cut off at the token limit before any JSON action; keep your reasoning short and reply with the action"
 
 
@@ -59,6 +60,7 @@ class Step:
     result: Optional[Dict[str, Any]] = None
     observation: str = ""
     parse_error: Optional[str] = None
+    reply: str = ""               # the raw reply, only when it could not be parsed
 
 
 @dataclass
@@ -133,7 +135,7 @@ def _ask(llm: ChatClient, messages: List[Dict[str, str]], episode: Episode,
                 raise TokenLimit(f"{role} reply truncated at the token limit "
                                  f"({completion.completion_tokens} completion tokens)") from exc
             if attempt == PARSE_RETRIES:
-                raise
+                raise ActionParseError(f"{exc}; last reply: {completion.text[:REPLY_CHARS]!r}") from exc
             messages += [
                 {"role": "assistant", "content": completion.text},
                 {"role": "user", "content": f"Your reply could not be parsed ({exc}). "
@@ -212,7 +214,7 @@ def agentic(question_id: int, question: str, schema: str,
             except ActionParseError as exc:
                 # Costs a step, like any other wasted action; the next prompt says why.
                 reason = TRUNCATED_STEP if completion.truncated else str(exc)
-                episode.steps.append(Step(index, parse_error=reason))
+                episode.steps.append(Step(index, parse_error=reason, reply=completion.text[:REPLY_CHARS]))
                 continue
             if action.kind == "final_answer":
                 episode.answer = action.answer

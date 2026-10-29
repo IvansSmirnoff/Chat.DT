@@ -125,7 +125,9 @@ def test_agentic_parse_error_costs_a_step_and_step_limit_abstains():
     assert ep.status == "step_limit"
     assert ep.answer.startswith("I cannot determine")
     assert ep.steps[0].parse_error and len(ep.steps) == 3
+    assert ep.steps[0].reply == "not json"  # kept for diagnosis, not shown to the model
     assert "could not be parsed" in llm.calls[1][1]["content"]
+    assert "not json" not in llm.calls[1][1]["content"]
 
 
 def _cut_off():
@@ -187,6 +189,7 @@ def test_single_shot_persistent_garbage_is_a_scored_parse_error():
     ep = loop.single_shot(1, "q", "SCHEMA", llm, FakeTools())
     assert ep.status == "parse_error" and ep.answer == loop.PARSE_ERROR_ANSWER
     assert ep.llm_calls == loop.PARSE_RETRIES + 1
+    assert "last reply: 'no json here'" in ep.error
 
 
 def test_decline_is_only_parsed_when_allowed():
