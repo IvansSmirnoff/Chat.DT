@@ -100,3 +100,29 @@ SYNTHETIC_EDGE_NOTES = {
 FLATTENED_RELATIONSHIPS = {
     "IfcRelDefinesByProperties": "flattened onto the owning product by flatten_psets",
 }
+
+#: Edges the topology enrichment derives (``src/etl/topology.py``); absent from a
+#: base graph. Unlike the IFC edges above, their meaning cannot be read off the
+#: pattern -- sharing a BOUNDED_BY wall looks like adjacency and is not -- so
+#: the schema prompt explains whichever of them the loaded graph carries.
+DERIVED_EDGE_NOTES = {
+    "CONNECTED_VIA": (
+        "rooms connected through a door (props door_gid, door_name). Stored in both "
+        "directions: use DISTINCT or an undirected pattern when counting"
+    ),
+    "ADJACENT_TO": (
+        "rooms that physically touch on the same storey: across a shared wall "
+        "(method='wall', via_gid = that wall) or open plan (method='open'); props gap_m, "
+        "shared_len_m. Stored in both directions. Two rooms bounded by the same "
+        "element (BOUNDED_BY) are NOT necessarily adjacent: a corridor wall bounds rooms metres apart"
+    ),
+    "VERTICAL_ACCESS": "stair, ramp or lift -> each storey it serves",
+}
+
+#: Node properties the same enrichment writes.
+DERIVED_PROPERTY_NOTES = {
+    "geo_cx, geo_cy": "plan centroid in metres (rooms, doors, windows, stairs, ramps)",
+    "geo_z_min, geo_z_max": "height range in metres",
+    "geo_footprint_m2": "plan footprint area in m² (rooms: floor outline)",
+    "is_exterior_door": "on doors: true if the door leads outside (external boundary, or it bounds one room)",
+}

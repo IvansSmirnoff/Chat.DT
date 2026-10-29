@@ -157,11 +157,14 @@ def test_materials_are_named(neo4j_driver):
 
 def test_graph_relationship_types_are_all_declared(neo4j_driver):
     """Nothing writes an edge type that is not in the shared spec table."""
-    from src.utils.ifc_edges import EDGE_SPECS, SYNTHETIC_EDGE_NOTES
+    from src.utils.ifc_edges import DERIVED_EDGE_NOTES, EDGE_SPECS, SYNTHETIC_EDGE_NOTES
 
     declared = {spec.rel_type for spec in EDGE_SPECS}
     declared |= {rel_type for rel_type, _ in SYNTHETIC_EDGE_NOTES.values()}
     declared |= {"HAS_MATERIAL_LAYER"}
+    # The topology enrichment's types (and db.relationshipTypes() is the token
+    # store: it keeps them after a remove or a restore of the base graph).
+    declared |= set(DERIVED_EDGE_NOTES)
 
     with neo4j_driver.session() as s:
         live = {

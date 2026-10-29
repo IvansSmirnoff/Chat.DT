@@ -18,6 +18,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from src.utils.ifc_edges import DERIVED_EDGE_NOTES, DERIVED_PROPERTY_NOTES
+
 from .ids_parser import IDSParser, IDSSchema
 from .schema_scanner import IFCSchemaScanner, IFCModelSchema
 
@@ -654,6 +656,19 @@ def get_system_schema_string(vocab: CombinedVocabulary) -> str:
             lines.append(f"  {rel}:")
             for src, dst in sorted(by_rel[rel]):
                 lines.append(f"    ({src})-[:{rel}]->({dst})")
+        # Topology enrichment: only when the graph carries it, so a base-graph
+        # prompt stays byte-identical to the one earlier runs saw.
+        derived = sorted(set(by_rel) & set(DERIVED_EDGE_NOTES))
+        if derived:
+            lines.extend([
+                "",
+                "=" * 50,
+                "DERIVED FROM GEOMETRY (topology enrichment):",
+                "=" * 50,
+            ])
+            lines.extend(f"  {rel}: {DERIVED_EDGE_NOTES[rel]}" for rel in derived)
+            lines.append("  Properties (where present):")
+            lines.extend(f"    {name}: {note}" for name, note in DERIVED_PROPERTY_NOTES.items())
     elif vocab.all_relations:
         lines.extend([
             "",

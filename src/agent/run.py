@@ -52,6 +52,7 @@ from src.config import get_settings
 from src.constraints.cfg_grammar import grammar_from_summary
 from src.etl.graph_cache import fingerprint, graph_summary, read_header, restore_graph
 from src.etl.manifest import cache_path, load_manifest, resolve
+from src.etl.topology import ENRICHMENT, apply_topology, compute_topology
 from src.eval.judge import DEFAULT_JUDGE, judge_answer, make_judge
 
 logger = logging.getLogger("agent.run")
@@ -87,20 +88,31 @@ def done_keys(path: Path, need_judgement: bool) -> set:
     return keys
 
 
-def build_snapshot(driver, manifest, entry, snapshot: Path, etl_report_dir: Path) -> str:
-    """ETL the model's IFC file and export it: a fresh machine needs no hand-made files.
+def build_snapshot(driver, manifest, entry, snapshot: Path, etl_report_dir: Path,
+                   state: str = "base") -> str:
+    """Build a missing snapshot and export it: a fresh machine needs no hand-made files.
 
-    Only the ``base`` state can be built this way; enriched states are derived
-    from it by their own scripts.
+    ``base``: ETL the model's IFC file. ``topology``: make the base graph the
+    loaded one (restoring or building it), apply the topology enrichment
+    computed from the same IFC, and export that.
     """
     from src.etl.graph_cache import export_with_meta
-    from src.etl.loader import IFCToNeo4jLoader
 
     ifc = resolve(manifest, entry["paths"]["ifc"])
     if not ifc.is_file():
         raise RuntimeError(f"{entry['model_id']}: {ifc} missing; run scripts/ifcbench/fetch.py")
-    logger.info("No snapshot for %s: running the ETL on %s", entry["model_id"], ifc.name)
     etl_report_dir.mkdir(parents=True, exist_ok=True)
+    if state == ENRICHMENT:
+        ensure_graph(driver, manifest, entry, "base", "auto", etl_report_dir)
+        logger.info("No %s snapshot for %s: enriching the base graph", state, entry["model_id"])
+        topo = compute_topology(ifc)
+        written = apply_topology(driver, topo)
+        (etl_report_dir / f"{entry['model_id']}.{state}.json").write_text(
+            json.dumps({"stats": topo.stats, "written": written}, indent=2))
+        return export_with_meta(driver, snapshot, entry["model_id"], state, ifc)["fingerprint"]
+    from src.etl.loader import IFCToNeo4jLoader
+
+    logger.info("No snapshot for %s: running the ETL on %s", entry["model_id"], ifc.name)
     stats = IFCToNeo4jLoader().run(ifc_path=ifc, report_path=etl_report_dir / f"{entry['model_id']}.json")
     if stats["errors"]:
         logger.warning("%s: ETL reported %d element errors", entry["model_id"], stats["errors"])
@@ -118,9 +130,9 @@ def ensure_graph(driver, manifest, entry, state: str, policy: str,
     """
     snapshot = cache_path(manifest, entry, state)
     if not snapshot.is_file():
-        if policy != "auto" or state != "base":
+        if policy != "auto" or state not in ("base", ENRICHMENT):
             raise RuntimeError(f"{entry['model_id']}: no {state} snapshot at {snapshot}")
-        return {"fingerprint": build_snapshot(driver, manifest, entry, snapshot, etl_report_dir),
+        return {"fingerprint": build_snapshot(driver, manifest, entry, snapshot, etl_report_dir, state),
                 "restored": False, "built": True}
     expected = read_header(snapshot)["fingerprint"]
     live = fingerprint(graph_summary(driver))
@@ -205,7 +217,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--judge-provider", help="Pin the judge's OpenRouter provider(s), e.g. z-ai")
     p.add_argument("--no-judge", action="store_true")
     p.add_argument("--run", required=True, help="Run name (results/ifcbench/runs/<run>)")
-    p.add_argument("--state", default="base", help="Graph state snapshot to use")
+    p.add_argument("--state", default="base",
+                   help=f"Graph state snapshot to use: base, or {ENRICHMENT} (built from base if missing)")
     p.add_argument("--restore", choices=["auto", "never"], default="auto",
                    help="auto: restore the snapshot if needed, building it (ETL) if missing")
     p.add_argument("--max-steps", type=int, default=loop.MAX_STEPS)
