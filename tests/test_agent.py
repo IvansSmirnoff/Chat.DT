@@ -292,6 +292,20 @@ def test_reasoning_and_pinning_are_refused_off_openrouter(monkeypatch):
         ChatClient(model="m", base_url="http://x", reasoning="low")
 
 
+def test_summary_reports_both_hellin_accuracies():
+    from src.agent.run import summarise
+
+    def rec(verdict, cat=1):
+        return {"paradigm": "agentic", "category": cat, "judgement": {"verdict": verdict},
+                "episode": {"n_queries": 1, "cost_usd": 0.0, "wall_s": 1.0, "status": "ok"}}
+
+    cells = summarise([rec("correct"), rec("wrong"), rec("abstained"), rec("abstained", 4)])
+    a = cells["agentic"]
+    assert (a["accuracy"], a["accuracy_attempted"], a["abstention_rate"]) == (0.25, 0.5, 0.5)
+    # Nothing attempted: the secondary metric is undefined, not zero.
+    assert summarise([rec("abstained")])["agentic"]["accuracy_attempted"] is None
+
+
 def test_run_refuses_to_resume_with_other_settings(monkeypatch, tmp_path):
     from src.agent import run
 

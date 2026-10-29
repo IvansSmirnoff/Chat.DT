@@ -140,11 +140,16 @@ def summarise(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         for r in rs:
             by_cat[str(r["category"])][r["judgement"]["verdict"]] += 1
         n = len(rs)
+        attempted = verdicts["correct"] + verdicts["wrong"]
+        # Hellin et al.'s metrics: primary accuracy = correct / n (abstentions count
+        # as failures), secondary "accuracy among attempted answers".
         cells[paradigm] = {
             "n": n,
             "correct": verdicts["correct"], "wrong": verdicts["wrong"],
             "abstained": verdicts["abstained"],
             "accuracy": round(verdicts["correct"] / n, 4) if n else None,
+            "accuracy_attempted": round(verdicts["correct"] / attempted, 4) if attempted else None,
+            "abstention_rate": round(verdicts["abstained"] / n, 4) if n else None,
             "by_category": {c: {"n": sum(v.values()),
                                 "accuracy": round(v["correct"] / sum(v.values()), 4)}
                             for c, v in sorted(by_cat.items())},
