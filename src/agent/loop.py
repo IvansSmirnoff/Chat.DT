@@ -18,6 +18,10 @@ again with the same budget only repeats it (GLM-4.5-air with thinking on spends
 any budget, 32k measured, imagining query results). So it is never re-asked: in
 single-shot it ends the episode as a ``token_limit`` abstention, the analogue of
 the agent's ``step_limit``; in the agentic loop it costs a step.
+
+``grammar`` (vLLM only, ``src/constraints/cfg_grammar.py``) constrains the calls
+that write a query: the single-shot generator and every agent step. The
+synthesiser is never constrained: it writes prose.
 """
 
 from __future__ import annotations
@@ -107,15 +111,20 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + f"\n... [{len(text) - limit} chars clipped]"
 
 
+def _constrained(grammar: Optional[str]) -> Dict[str, Any]:
+    """The request fields that hold one reply to ``grammar`` (none without one)."""
+    return {"structured_outputs": {"grammar": grammar}} if grammar else {}
+
+
 def _ask(llm: ChatClient, messages: List[Dict[str, str]], episode: Episode,
-         allowed: tuple, role: str) -> Action:
+         allowed: tuple, role: str, grammar: Optional[str] = None) -> Action:
     """One LLM call, re-asked up to PARSE_RETRIES times if the JSON is unusable.
 
     A truncated reply is not re-asked (see the module docstring).
     """
     messages = list(messages)
     for attempt in range(PARSE_RETRIES + 1):
-        completion = llm.complete(messages)
+        completion = llm.complete(messages, **_constrained(grammar))
         episode.account(completion, role)
         try:
             return parse_action(completion.text, allowed)
@@ -134,7 +143,7 @@ def _ask(llm: ChatClient, messages: List[Dict[str, str]], episode: Episode,
 
 
 def single_shot(question_id: int, question: str, schema: str,
-                llm: ChatClient, tools: GraphTools) -> Episode:
+                llm: ChatClient, tools: GraphTools, grammar: Optional[str] = None) -> Episode:
     episode = Episode(question_id, question, "single_shot", llm.spec or llm.model)
     start = time.monotonic()
     try:
@@ -142,7 +151,7 @@ def single_shot(question_id: int, question: str, schema: str,
         # at its word; one that declines (no query, no answer) leaves the
         # synthesiser to answer from nothing, as when Hellin's code fails to run.
         gen = _ask(llm, prompts.static_generator_messages(question, schema), episode,
-                   ("cypher", "final_answer", "decline"), "generator")
+                   ("cypher", "final_answer", "decline"), "generator", grammar)
         if gen.kind == "final_answer":
             episode.answer = gen.answer
         else:
@@ -186,7 +195,8 @@ def _previous_attempts(steps: List[Step]) -> str:
 
 
 def agentic(question_id: int, question: str, schema: str,
-            llm: ChatClient, tools: GraphTools, max_steps: int = MAX_STEPS) -> Episode:
+            llm: ChatClient, tools: GraphTools, max_steps: int = MAX_STEPS,
+            grammar: Optional[str] = None) -> Episode:
     episode = Episode(question_id, question, "agentic", llm.spec or llm.model)
     start = time.monotonic()
     try:
@@ -195,7 +205,7 @@ def agentic(question_id: int, question: str, schema: str,
                 question, schema, _previous_attempts(episode.steps),
                 max_steps=max_steps, max_rows=tools.max_rows, timeout=tools.timeout_s,
             )
-            completion = llm.complete(messages)
+            completion = llm.complete(messages, **_constrained(grammar))
             episode.account(completion, "agent")
             try:
                 action = parse_action(completion.text)

@@ -10,6 +10,7 @@ Results go to ``results/ifcbench/runs/<run>/``:
 
     config.json              arguments, dataset commit, per-model graph identity
     context/<model_id>.txt   the schema prompt the model saw
+    context/<model_id>.<reply>.lark   the reply grammars, with ``--grammar cfg``
     episodes.jsonl           one line per (model, question, paradigm): episode + judgement
     summary.json             accuracy / abstention / cost per paradigm and category
 
@@ -22,12 +23,15 @@ is one experimental cell.
 Usage:
     python -m src.agent.run --model-id dental_clinic__arc --split train \\
         --llm openrouter:z-ai/glm-4.5-air --provider z-ai --reasoning off --run clinic_smoke
+    python -m src.agent.run --model-id dental_clinic__arc --split train \\
+        --llm vllm:Qwen/Qwen3-8B-AWQ --reasoning off --grammar cfg --run clinic_qwen3_8b_cfg
     python -m src.agent.run --manifest-split test --run full_glm45air ...
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -45,6 +49,7 @@ from src.agent.context import build_graph_context
 from src.agent.llm import REASONING_MODES, client_from_spec
 from src.agent.tools import GraphTools
 from src.config import get_settings
+from src.constraints.cfg_grammar import grammar_from_summary
 from src.etl.graph_cache import fingerprint, graph_summary, read_header, restore_graph
 from src.etl.manifest import cache_path, load_manifest, resolve
 from src.eval.judge import DEFAULT_JUDGE, judge_answer, make_judge
@@ -52,6 +57,9 @@ from src.eval.judge import DEFAULT_JUDGE, judge_answer, make_judge
 logger = logging.getLogger("agent.run")
 
 PARADIGMS = {"single_shot": loop.single_shot, "agentic": loop.agentic}
+# Which reply grammar constrains each paradigm's query-writing calls.
+GRAMMAR_REPLY = {"single_shot": "generator", "agentic": "agent"}
+GRAMMARS = ("none", "cfg")
 Key = Tuple[str, int, str]
 
 
@@ -128,6 +136,12 @@ def ensure_graph(driver, manifest, entry, state: str, policy: str,
     return {"fingerprint": expected, "restored": True}
 
 
+def _query_error_rate(records: List[Dict[str, Any]]) -> Optional[float]:
+    """Share of executed queries Neo4j refused (syntax, type or timeout errors)."""
+    results = [s.get("result") or {} for r in records for s in r["episode"]["steps"] if s.get("cypher")]
+    return round(sum(bool(x.get("error")) for x in results) / len(results), 4) if results else None
+
+
 def summarise(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     cells: Dict[str, Dict[str, Any]] = {}
     groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -154,6 +168,7 @@ def summarise(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
                                 "accuracy": round(v["correct"] / sum(v.values()), 4)}
                             for c, v in sorted(by_cat.items())},
             "mean_queries": round(sum(r["episode"]["n_queries"] for r in rs) / n, 2) if n else None,
+            "query_error_rate": _query_error_rate(rs),
             "cost_usd": round(sum(r["episode"]["cost_usd"] for r in rs), 4),
             "judge_cost_usd": round(sum(r["judgement"].get("cost_usd") or 0 for r in rs), 4),
             "mean_wall_s": round(sum(r["episode"]["wall_s"] for r in rs) / n, 1) if n else None,
@@ -184,6 +199,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--reasoning", choices=REASONING_MODES, default="default",
                    help="Backbone thinking: model default, or forced on/off (a run factor)")
     p.add_argument("--provider", help="Pin the backbone's OpenRouter provider(s), comma-separated, e.g. z-ai")
+    p.add_argument("--grammar", choices=GRAMMARS, default="none",
+                   help="cfg: constrain query-writing replies to the graph's grammar (vLLM only)")
     p.add_argument("--judge", default=DEFAULT_JUDGE, help=f"Default: {DEFAULT_JUDGE}")
     p.add_argument("--judge-provider", help="Pin the judge's OpenRouter provider(s), e.g. z-ai")
     p.add_argument("--no-judge", action="store_true")
@@ -215,7 +232,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     def providers(value: Optional[str]) -> Optional[List[str]]:
         return [v.strip() for v in value.split(",") if v.strip()] if value else None
 
-    if not args.provider:
+    if args.grammar != "none" and not args.llm.startswith("vllm:"):
+        p.error("--grammar needs a vllm: backbone (grammars go through vLLM's structured outputs)")
+    if not args.provider and args.llm.startswith("openrouter:"):
         logger.warning("No --provider: OpenRouter may serve calls from different providers")
     llm = client_from_spec(args.llm, provider_order=providers(args.provider),
                            reasoning=args.reasoning)
@@ -237,6 +256,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "judge_provider": providers(args.judge_provider),
         "state": args.state, "max_steps": args.max_steps,
     }
+    if args.grammar != "none":  # absent when off, so older runs still resume
+        settings_stamp["grammar"] = args.grammar
     if config_path.exists() and config.get("settings") != settings_stamp:
         p.error(f"{out} was run with other settings; use a new --run.\n"
                 f"  stored: {config.get('settings')}\n  now:    {settings_stamp}")
@@ -264,12 +285,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             schema = ctx.schema_prompt()
             (out / "context" / f"{mid}.txt").write_text(schema, encoding="utf-8")
             config["models"][mid] = {**ctx.graph, **identity}
+            grammars: Dict[str, Optional[str]] = {par: None for par in paradigms}
+            if args.grammar == "cfg":
+                for par in paradigms:
+                    reply = GRAMMAR_REPLY[par]
+                    grammars[par] = grammar_from_summary(ctx.graph_stats, reply=reply)
+                    (out / "context" / f"{mid}.{reply}.lark").write_text(grammars[par], encoding="utf-8")
+                config["models"][mid]["grammar_sha256"] = {
+                    GRAMMAR_REPLY[par]: hashlib.sha256(g.encode()).hexdigest()
+                    for par, g in grammars.items() if g}
             config_path.write_text(json.dumps(config, indent=2))
             logger.info("%s: %d cells (%d questions x %s), schema %d chars",
                         mid, len(todo), len(questions), paradigms, len(schema))
 
             def cell(q: Dict[str, Any], paradigm: str) -> Dict[str, Any]:
                 kwargs = {"max_steps": args.max_steps} if paradigm == "agentic" else {}
+                kwargs["grammar"] = grammars[paradigm]
                 episode = PARADIGMS[paradigm](q["id"], q["question"], schema, llm, tools, **kwargs)
                 judgement = None
                 if judge is not None and episode.status != "error":

@@ -14,3 +14,6 @@ black>=23.0.0
 isort>=5.12.0
 mypy>=1.5.0
 ruff>=0.1.0
+
+# Reply-grammar tests and scripts/grammar_coverage.py (vLLM brings its own in Colab)
+llguidance>=1.7

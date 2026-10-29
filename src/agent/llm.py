@@ -45,7 +45,8 @@ RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 # Thinking is a run factor. ``default`` sends nothing (the model's own default:
 # on for every GLM/MiniMax backbone used here); ``on``/``off`` force it through
-# OpenRouter's unified ``reasoning`` parameter. Effort levels are not offered:
+# OpenRouter's unified ``reasoning`` parameter, or on vLLM through the chat
+# template's ``enable_thinking`` (Qwen3). Effort levels are not offered:
 # GLM-4.5-air's providers ignore them (measured, results/ifcbench/probe/).
 REASONING_MODES = ("default", "on", "off")
 
@@ -174,6 +175,10 @@ def client_from_spec(spec: str, provider_order: Optional[List[str]] = None,
         raise ValueError(f"{spec}: set one of {', '.join(conf['key_env'])}")
 
     extra: Dict[str, Any] = dict(kwargs.pop("extra_body", {}) or {})
+    if provider == "vllm":
+        # A local GPU batching several episodes can take minutes for an 8k-token
+        # reply; a timeout would be retried and regenerate the whole reply.
+        kwargs.setdefault("timeout_s", 600.0)
     if provider == "openrouter":
         # Billed cost in the response, and no silent fallback to another
         # provider mid-run (different quantisations answer differently).
@@ -181,7 +186,14 @@ def client_from_spec(spec: str, provider_order: Optional[List[str]] = None,
         extra.setdefault("provider", {"allow_fallbacks": False})
         if provider_order:
             extra["provider"] = {**extra["provider"], "order": list(provider_order)}
+    elif provider == "vllm" and not provider_order and kwargs.get("reasoning", "default") != "default":
+        # vLLM has no unified ``reasoning`` field: Qwen3-style chat templates
+        # switch thinking themselves.
+        thinking = kwargs.pop("reasoning") == "on"
+        extra["chat_template_kwargs"] = {**extra.get("chat_template_kwargs", {}),
+                                         "enable_thinking": thinking}
     elif provider_order or kwargs.get("reasoning", "default") != "default":
-        raise ValueError(f"{spec}: provider pinning and reasoning on/off are OpenRouter options")
+        raise ValueError(f"{spec}: provider pinning is an OpenRouter option, "
+                         "reasoning on/off an OpenRouter or vLLM one")
     return ChatClient(model=model, base_url=base_url, api_key=api_key,
                       extra_body=extra, spec=spec, **kwargs)

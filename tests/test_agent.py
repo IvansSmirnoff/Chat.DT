@@ -284,12 +284,62 @@ def test_reasoning_and_pinning_are_refused_off_openrouter(monkeypatch):
     from src.agent.llm import client_from_spec
 
     monkeypatch.setenv("VLLM_BASE_URL", "http://vllm.invalid/v1")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
     with pytest.raises(ValueError, match="OpenRouter"):
-        client_from_spec("vllm:Qwen/Qwen2.5-7B-Instruct", reasoning="off")
+        client_from_spec("gemini:gemini-2.5-flash", reasoning="off")
     with pytest.raises(ValueError, match="OpenRouter"):
         client_from_spec("vllm:Qwen/Qwen2.5-7B-Instruct", provider_order=["x"])
     with pytest.raises(ValueError, match="reasoning"):
         ChatClient(model="m", base_url="http://x", reasoning="low")
+
+
+def test_vllm_reasoning_switch_goes_through_the_chat_template(monkeypatch):
+    from src.agent.llm import client_from_spec
+
+    bodies = []
+    monkeypatch.setenv("VLLM_BASE_URL", "http://vllm.invalid/v1")
+    monkeypatch.setattr("src.agent.llm.httpx.post", lambda *a, json=None, **k: (
+        bodies.append(json), httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]}))[1])
+    client = client_from_spec("vllm:Qwen/Qwen3-8B-AWQ", reasoning="off")
+    client.complete([{"role": "user", "content": "x"}], structured_outputs={"grammar": "start: \"x\""})
+    assert client.timeout_s == 600.0
+    body = bodies[0]
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["structured_outputs"] == {"grammar": "start: \"x\""}
+    assert "reasoning" not in body  # OpenRouter's field means nothing to vLLM
+
+
+def test_grammar_constrains_query_writing_calls_only():
+    class Recording(ScriptedLLM):
+        def complete(self, messages, **kw):
+            self.kwargs = getattr(self, "kwargs", []) + [kw]
+            return super().complete(messages)
+
+    g = {"structured_outputs": {"grammar": "G"}}
+    llm = Recording([_act(thoughts="q", cypher="MATCH (d:IfcDoor) RETURN count(d)"),
+                     _act(thoughts="s", answer="254 doors")])
+    loop.single_shot(1, "How many doors?", "SCHEMA", llm, FakeTools(), grammar="G")
+    assert llm.kwargs == [g, {}]  # generator constrained, synthesiser free
+
+    llm = Recording([_act(action="cypher", thoughts="q", cypher="MATCH (d:IfcDoor) RETURN count(d)"),
+                     _act(action="final_answer", thoughts="s", answer="254")])
+    loop.agentic(1, "How many doors?", "SCHEMA", llm, FakeTools(), grammar="G")
+    assert llm.kwargs == [g, g]
+
+    llm = Recording([_act(action="final_answer", thoughts="s", answer="254")])
+    loop.agentic(1, "How many doors?", "SCHEMA", llm, FakeTools())
+    assert llm.kwargs == [{}]
+
+
+def test_run_refuses_a_grammar_off_vllm(monkeypatch, tmp_path):
+    from src.agent import run
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    with pytest.raises(SystemExit):
+        run.main(["--model-id", "dental_clinic__arc", "--split", "train", "--no-judge",
+                  "--llm", "openrouter:z-ai/glm-4.5-air", "--grammar", "cfg",
+                  "--run", "r", "--out-root", str(tmp_path),
+                  "--manifest", "data/ifcbench/manifest.yaml"])
 
 
 def test_summary_reports_both_hellin_accuracies():
@@ -297,11 +347,14 @@ def test_summary_reports_both_hellin_accuracies():
 
     def rec(verdict, cat=1):
         return {"paradigm": "agentic", "category": cat, "judgement": {"verdict": verdict},
-                "episode": {"n_queries": 1, "cost_usd": 0.0, "wall_s": 1.0, "status": "ok"}}
+                "episode": {"n_queries": 1, "cost_usd": 0.0, "wall_s": 1.0, "status": "ok",
+                            "steps": [{"cypher": "q", "result": {"error": err}}
+                                      for err in ([None, "SyntaxError"] if verdict == "wrong" else [None])]}}
 
     cells = summarise([rec("correct"), rec("wrong"), rec("abstained"), rec("abstained", 4)])
     a = cells["agentic"]
     assert (a["accuracy"], a["accuracy_attempted"], a["abstention_rate"]) == (0.25, 0.5, 0.5)
+    assert a["query_error_rate"] == 0.2  # 1 refused of 5 executed
     # Nothing attempted: the secondary metric is undefined, not zero.
     assert summarise([rec("abstained")])["agentic"]["accuracy_attempted"] is None
 
