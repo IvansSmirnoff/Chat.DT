@@ -1,7 +1,7 @@
 """Context-free grammar for the agent's replies (llguidance Lark dialect).
 
 Sent with vLLM's ``structured_outputs: {"grammar": ...}`` (server flag
-``--structured-outputs-config.backend guidance``), it constrains a local model's
+``--structured-outputs-config.backend xgrammar``), it constrains a local model's
 whole reply: the JSON envelope the agent prompts ask for (``prompts.py``), and
 inside it a read-only Cypher query whose labels, relationship types and property
 keys can only be ones the loaded graph carries. It replaces nothing on the API
@@ -19,6 +19,16 @@ Two rules come from the decoding side, not from Cypher:
 * Identifiers, aliases and string literals are length-capped. An unbounded
   identifier is the FSM trap ``grammar.py`` documents: a small model can pack
   its whole token budget into one name that stays grammar-valid.
+
+Backend: xgrammar, not llguidance. llguidance builds each token mask by walking
+the vocabulary through an Earley parser with a 50,000-item budget per mask.
+Qwen3's code-heavy vocabulary (``word-``, ``name(``, ``x=``, dash runs) makes
+every operator after an identifier open a fresh expression row, the budget runs
+out right after ``RETURN``, the matcher errors and vLLM ends the reply mid-query
+(the first spike runs: every constrained reply cut off). xgrammar compiles the
+same Lark text to a pushdown automaton with cached masks and has no such budget.
+Expressions are flat (operand, operator, operand ...): acceptance needs no
+precedence, and Neo4j parses the query itself.
 
 Not yet here (P4 proper): per-label property sets, relationship signatures,
 IDS value enumerations.
@@ -95,22 +105,10 @@ rel: "-" rel_detail? "-" ">"? | "<" "-" rel_detail? "-"
 rel_detail: "[" VAR? rel_types? hops? "]"
 hops: "*" (INT? (".." INT?)?)?
 
-expr: and_expr ((OR | XOR) and_expr)*
-and_expr: not_expr (AND not_expr)*
-not_expr: NOT* comparison
-comparison: add_expr comp_tail*
-comp_tail: COMP_OP add_expr
-         | STARTS WITH add_expr
-         | ENDS WITH add_expr
-         | CONTAINS add_expr
-         | IS NOT? NULL
-         | IN add_expr
-         | "=~" add_expr
-add_expr: mul_expr (("+" | "-") mul_expr)*
-mul_expr: pow_expr (("*" | "/" | "%") pow_expr)*
-pow_expr: unary ("^" unary)*
-unary: ("+" | "-")? postfix
-postfix: atom postfix_op*
+expr: operand (binop operand | IS NOT? NULL)*
+operand: NOT* "-"? atom postfix_op*
+binop: AND | OR | XOR | COMP_OP | "+" | "-" | "*" | "/" | "%" | "^" | "=~"
+     | CONTAINS | STARTS WITH | ENDS WITH | IN
 postfix_op: "." PROP | "[" expr "]" | "[" expr? ".." expr? "]"
 atom: literal
     | VAR
@@ -248,26 +246,57 @@ def grammar_from_summary(summary: Mapping[str, Any], reply: str = "agent") -> st
     )
 
 
-def check_reply(grammar: str, reply: str) -> Optional[str]:
+def check_reply(grammar: str, reply: str, backend: str = "xgrammar") -> Optional[str]:
     """``None`` if ``reply`` is a complete sentence of ``grammar``, else why not.
 
     Byte-level, so acceptance does not depend on any model's tokenizer (the
-    tokenizer only changes how the mask is computed, not the language). Needs
-    ``llguidance`` (requirements-dev.txt); vLLM brings its own in Colab.
+    tokenizer only changes how masks are computed, not the language). It does
+    not exercise mask computation either: the llguidance budget failure above
+    only shows with a real tokenizer. ``backend`` is the vLLM backend whose
+    reading of the grammar is checked (requirements-dev.txt; vLLM brings both).
     """
+    data = reply.encode("utf-8")
+    if backend == "xgrammar":
+        import xgrammar as xg
+
+        matcher = xg.GrammarMatcher(_xgrammar_compiler().compile_grammar(xg.Grammar.from_lark(grammar)))
+        for i in range(len(data)):
+            if not matcher.accept_token(data[i]):
+                return _rejected_at(data, i)
+        return None if matcher.accept_token(256) else "incomplete: the reply stops before the grammar can end"
+    if backend != "llguidance":
+        raise ValueError(f"backend must be xgrammar or llguidance: {backend!r}")
     import llguidance
 
     matcher = llguidance.LLMatcher(_byte_tokenizer(), llguidance.LLMatcher.grammar_from_lark(grammar),
                                    log_level=0)
     if matcher.is_error():
         return f"grammar error: {matcher.get_error()}"
-    data = reply.encode("utf-8")
     for i, byte in enumerate(data):
         if not matcher.consume_tokens([byte]):
-            return f"rejected at byte {i}: ...{data[max(0, i - 40):i].decode(errors='replace')}[HERE]{data[i:i + 20].decode(errors='replace')}"
+            return _rejected_at(data, i)
     if not matcher.is_accepting():
         return "incomplete: the reply stops before the grammar can end"
     return None
+
+
+def _rejected_at(data: bytes, i: int) -> str:
+    before = data[max(0, i - 40):i].decode(errors="replace")
+    return f"rejected at byte {i}: ...{before}[HERE]{data[i:i + 20].decode(errors='replace')}"
+
+
+_XGRAMMAR_COMPILER = None
+
+
+def _xgrammar_compiler():
+    """A GrammarCompiler over a vocabulary of the 256 bytes, plus an EOS (256)."""
+    global _XGRAMMAR_COMPILER
+    if _XGRAMMAR_COMPILER is None:
+        import xgrammar as xg
+
+        info = xg.TokenizerInfo([bytes([i]) for i in range(256)] + [b"<eos>"], stop_token_ids=[256])
+        _XGRAMMAR_COMPILER = xg.GrammarCompiler(info)
+    return _XGRAMMAR_COMPILER
 
 
 _BYTE_TOKENIZER = None

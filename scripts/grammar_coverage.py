@@ -7,7 +7,8 @@ A grammar that rejects queries a strong model needs would make the constrained
 arm lose for the wrong reason. So before any constrained run, every query the
 API backbones executed without error is replayed through the grammar of the
 graph it ran on: wrapped in the agent envelope exactly as a model would emit it,
-and checked byte by byte (``cfg_grammar.check_reply``). The acceptance rate is
+and checked byte by byte (``cfg_grammar.check_reply``) by the vLLM backend the
+runs use (``--backend``, default xgrammar: ``pip install xgrammar==0.2.8``). The acceptance rate is
 the grammar's coverage; every rejection is listed so it can be judged as either
 a grammar gap or a query the grammar is right to forbid.
 
@@ -58,6 +59,7 @@ def main(argv=None) -> int:
     p.add_argument("episodes", nargs="+", type=Path)
     p.add_argument("--state", default="base")
     p.add_argument("--manifest", type=Path, default=get_settings().ifcbench_manifest_path)
+    p.add_argument("--backend", choices=["xgrammar", "llguidance"], default="xgrammar")
     p.add_argument("--out", type=Path, help="Write every verdict as JSON")
     args = p.parse_args(argv)
 
@@ -72,7 +74,7 @@ def main(argv=None) -> int:
         one_line = re.sub(r"\s+", " ", cypher).strip()
         reply = json.dumps({"action": "cypher", "thoughts": "", "cypher": one_line})
         verdicts.append({"model_id": model_id, "run": run, "cypher": one_line,
-                         "rejection": check_reply(grammars[model_id], reply)})
+                         "rejection": check_reply(grammars[model_id], reply, args.backend)})
 
     rejected = [v for v in verdicts if v["rejection"]]
     n = len(verdicts)
