@@ -4,6 +4,7 @@ No Neo4j and no network: the LLM is scripted and the graph tools are faked.
 """
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -205,6 +206,54 @@ def test_agentic_truncated_step_costs_a_step_and_says_why():
     assert ep.status == "ok" and ep.answer.startswith("42 mm")
     assert ep.steps[0].parse_error == loop.TRUNCATED_STEP
     assert "token limit" in llm.calls[1][1]["content"]
+
+
+def test_stored_steps_keep_only_what_the_model_was_shown():
+    big = {"columns": ["n"], "rows": [[{"labels": ["IfcSpace"], "Name": "x" * 200}]] * 50,
+           "total_rows": 5000}
+    llm = ScriptedLLM([_act(action="cypher", cypher="BIG"),
+                       _act(action="cypher", cypher="SMALL"),
+                       _act(action="final_answer", answer="5000 spaces (count of IfcSpace).")])
+    tools = FakeTools({"BIG": big, "SMALL": {"columns": ["c"], "rows": [[3]], "total_rows": 1}})
+    ep = loop.agentic(1, "q", "SCHEMA", llm, tools)
+    full = ep.steps[0].observation
+    assert len(full) > loop.RESULT_CHARS
+    # The model's view is unchanged: the next prompt holds the RESULT_CHARS clip.
+    assert loop._clip(full, loop.RESULT_CHARS) in llm.calls[1][1]["content"]
+
+    big_step, small_step = ep.to_dict()["steps"]
+    assert big_step["observation"] == loop._clip(full, loop.RESULT_CHARS)
+    assert big_step["observation_chars"] == len(full) and big_step["observation_clipped"]
+    assert "rows" not in big_step["result"]
+    assert big_step["result"]["total_rows"] == 5000 and big_step["result"]["error"] is None
+    assert small_step["observation"] == "1 row(s); columns: c\n[3]"
+    assert not small_step["observation_clipped"]
+    assert len(json.dumps(ep.to_dict())) < 3 * loop.RESULT_CHARS
+    assert ep.steps[0].result["rows"]  # in memory nothing is dropped
+
+
+def test_stored_episodes_still_feed_the_readers(tmp_path):
+    import importlib.util
+
+    from src.agent.run import summarise
+
+    llm = ScriptedLLM([_act(action="cypher", cypher="BAD"), _act(action="cypher", cypher="GOOD"),
+                       _act(action="final_answer", answer="3 (from GOOD).")])
+    tools = FakeTools({"BAD": {"error": "Neo.ClientError.Statement.SyntaxError: x"}})
+    rec = {"model_id": "m", "question_id": 1, "paradigm": "agentic", "category": 1,
+           "episode": loop.agentic(1, "q", "SCHEMA", llm, tools).to_dict(),
+           "judgement": {"verdict": "correct"}}
+    rec = json.loads(json.dumps(rec))
+    assert rec["episode"]["final_cypher"] == "GOOD"
+    assert summarise([rec])["agentic"]["query_error_rate"] == 0.5
+
+    episodes = tmp_path / "episodes.jsonl"
+    episodes.write_text(json.dumps(rec) + "\n")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "grammar_coverage.py"
+    spec = importlib.util.spec_from_file_location("grammar_coverage", script)
+    coverage = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(coverage)
+    assert list(coverage.executed_queries([episodes])) == [("m", "GOOD")]
 
 
 def test_query_result_render_reports_truncation_and_errors():

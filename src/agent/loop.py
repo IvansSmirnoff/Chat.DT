@@ -10,8 +10,9 @@ FinalAnswer. Running out of steps is an abstention, as in his agent (25 steps).
 
 Both return an :class:`Episode` holding every LLM call's tokens, cost and
 latency and every query's result, so cost and accuracy come from one record.
-An infrastructure failure (the LLM API, not the model) is ``status="error"``
-and is meant to be re-run, not scored.
+The stored record keeps no more of a result than the model was shown
+(:meth:`Step.to_dict`). An infrastructure failure (the LLM API, not the model)
+is ``status="error"`` and is meant to be re-run, not scored.
 
 A reply cut off at max_tokens is the model's doing, not the API's, and asking
 again with the same budget only repeats it (GLM-4.5-air with thinking on spends
@@ -62,6 +63,23 @@ class Step:
     parse_error: Optional[str] = None
     reply: str = ""               # the raw reply, only when it could not be parsed
 
+    def to_dict(self) -> Dict[str, Any]:
+        """The stored step: no more of the result than the model was ever shown.
+
+        The model sees at most RESULT_CHARS of an observation (the synthesiser
+        and recent agent steps; older steps less), so that clip is kept, with
+        the full length and whether it was cut. The result keeps its columns,
+        true row count and error but not its rows: the observation holds as many
+        as the model saw. Full results made one Qwen3-32B episode 3M chars.
+        """
+        d = asdict(self)
+        d["observation"] = _clip(self.observation, RESULT_CHARS)
+        d["observation_chars"] = len(self.observation)
+        d["observation_clipped"] = len(self.observation) > RESULT_CHARS
+        if self.result is not None:
+            d["result"] = {k: v for k, v in self.result.items() if k != "rows"}
+        return d
+
 
 @dataclass
 class Episode:
@@ -104,6 +122,7 @@ class Episode:
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
+        d["steps"] = [s.to_dict() for s in self.steps]
         d["final_cypher"] = self.final_cypher
         d["n_queries"] = sum(1 for s in self.steps if s.cypher)
         return d
