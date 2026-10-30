@@ -124,5 +124,9 @@ DERIVED_PROPERTY_NOTES = {
     "geo_cx, geo_cy": "plan centroid in metres (rooms, doors, windows, stairs, ramps)",
     "geo_z_min, geo_z_max": "height range in metres",
     "geo_footprint_m2": "plan footprint area in m² (rooms: floor outline)",
-    "is_exterior_door": "on doors: true if the door leads outside (external boundary, or it bounds one room)",
+    "is_exterior_door": (
+        "on doors: true if the door leads outside (external boundary, or it bounds one room). "
+        "True for every such door -- entrances, service doors, emergency exits alike; "
+        "it does not say which one is the main entrance"
+    ),
 }

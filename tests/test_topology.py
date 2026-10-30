@@ -178,6 +178,9 @@ def test_enriched_graph_prompt_explains_only_the_types_it_has():
     assert "ADJACENT_TO: rooms that physically touch" in text
     assert "CONNECTED_VIA:" not in text
     assert "geo_footprint_m2" in text
+    # The flag means "leads outside", not "is the entrance": a model filtered on
+    # it for the main entrance and picked a service door.
+    assert "does not say which one is the main entrance" in text
 
 
 # -----------------------------------------------------------------------------
