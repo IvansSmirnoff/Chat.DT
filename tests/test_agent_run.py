@@ -49,7 +49,7 @@ class Harness:
                           _question(20 + len(models), mid, "test")])
         self.manifest.write_text(yaml.safe_dump({"dataset": {"commit": "c"}, "models": models}))
 
-        self.episodes_run, self.graphs, self.judged = [], [], []
+        self.episodes_run, self.graphs, self.judged, self.variants = [], [], [], []
         self.judge_fails = False
         monkeypatch.setenv("OPENROUTER_API_KEY", "k")
         monkeypatch.setattr(run, "GraphDatabase", SimpleNamespace(
@@ -71,8 +71,9 @@ class Harness:
     def _paradigm(self, name):
         def episode(qid, question, schema, llm, tools, **kwargs):
             self.episodes_run.append((qid, name))
+            self.variants.append(kwargs["prompt_variant"])
             return loop.Episode(qid, question, name, llm.spec, answer=f"answer {qid} (from a query)",
-                                cost_usd=0.01)
+                                cost_usd=0.01, prompt_variant=kwargs["prompt_variant"])
         return episode
 
     def _judge(self, client, *, question, category, ground_truth, answer):
@@ -156,6 +157,30 @@ def test_a_no_judge_run_is_judged_by_a_later_resume(harness):
                      "--judge-provider", "z-ai")
     with pytest.raises(SystemExit):  # the episode settings still bind
         harness.main("--model-id", "clinic__arc", "--reasoning", "on", "--judge-provider", "z-ai")
+
+
+def test_prompt_variant_is_stamped_only_when_not_hellin(harness):
+    # Default: no stamp key, so run directories from before the flag still resume.
+    harness.main("--model-id", "clinic__arc", "--paradigm", "agentic")
+    assert harness.variants == ["hellin"]
+    assert "prompt_variant" not in harness.config()["settings"]
+    assert harness.config()["prompt_variant"] == "hellin"
+    assert harness.records()[0]["episode"]["prompt_variant"] == "hellin"
+    harness.main("--model-id", "clinic__arc", "--paradigm", "agentic", "--prompt-variant", "hellin")
+    assert len(harness.episodes_run) == 1             # resumed, nothing to run
+    with pytest.raises(SystemExit):                   # but ours is another cell
+        harness.main("--model-id", "clinic__arc", "--paradigm", "agentic", "--prompt-variant", "ours")
+
+    harness.main("--model-id", "clinic__arc", "--paradigm", "agentic", "--prompt-variant", "ours",
+                 run_name="r2")
+    assert harness.variants == ["hellin", "ours"]
+    assert harness.config("r2")["settings"]["prompt_variant"] == "ours"
+    assert harness.records("r2")[0]["episode"]["prompt_variant"] == "ours"
+    harness.main("--model-id", "clinic__arc", "--paradigm", "agentic", "--prompt-variant", "ours",
+                 run_name="r2")
+    assert len(harness.episodes_run) == 2
+    with pytest.raises(SystemExit):
+        harness.main("--model-id", "clinic__arc", "--paradigm", "agentic", run_name="r2")
 
 
 def test_resume_settings_lets_only_the_judge_arrive_late():

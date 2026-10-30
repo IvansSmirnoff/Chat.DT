@@ -14,6 +14,12 @@ instead of Python over IfcOpenShell -- and not the instructions:
 Changes from the source: the execution medium, the schema block (graph schema
 instead of helper functions), and JSON output instructions in place of BAML's
 ``ctx.output_format``.
+
+Prompt variants (``--prompt-variant`` in ``src.agent.run``): ``hellin`` is the
+above, unchanged. ``ours`` adds ANSWER_ADDENDUM, which is ours and not Hellin's,
+to the calls that write the answer: the synthesiser and the agent (whose one
+prompt also holds FinalAnswer). The single-shot generator only writes a query
+and stays Hellin's in both variants.
 """
 
 from src.constraints.context_builder import QUERY_GUIDELINES
@@ -103,6 +109,21 @@ When abstaining, use explicit refusal language:
 - "I am unable to answer this question as..."
 """
 
+# Ours, not Hellin's (``--prompt-variant ours``): answer-writing guidance from
+# the train-split error analysis. Answers with the right data failed on framing
+# (no stated assumption, inferred facts stated as fact, abstaining where a
+# partial answer plus an assumption was wanted) and on transparency (right
+# numbers, no word on how they were derived). Generic on purpose: no question
+# categories (the model never sees them), no IFC names, nothing per question.
+ANSWER_ADDENDUM = """## ANSWER WRITING (refines the criteria above)
+
+- Missing information: report what you did find, state every assumption explicitly ("Assuming ..."), including how you read an ambiguous term in the question, and give your best answer under it. Abstain only when nothing relevant exists in the BIM model, and then say what was searched. Keep refusal wording ("I cannot determine ...") for a real abstention.
+- Derivation: even for a simple count or lookup, say in a sentence or two how the answer was obtained: which elements, properties and filters, and how many items were included or excluded. Do not paste queries.
+- Sources: keep values read from the BIM model apart from general domain knowledge. Introduce the latter as an assumption and label it ("Assuming ..., general knowledge, not from the BIM model"), never as "typically" or "generally".
+"""
+
+PROMPT_VARIANTS = ("hellin", "ours")
+
 JSON_RULES = (
     "Respond with a single JSON object and nothing else: no markdown fences, no text "
     "before or after it. Strings must be valid JSON strings (escape quotes and newlines)."
@@ -137,7 +158,7 @@ A Cypher query was written and executed against a Neo4j graph of the IFC model t
 
 {criteria}
 If the query result is insufficient or the query failed, abstain clearly (see ABSTENTION).
-
+{addendum}
 ## OUTPUT FORMAT
 
 {json_rules}
@@ -169,7 +190,7 @@ Each query runs read-only with a {timeout:.0f} s timeout; you see at most {max_r
 - When a query returns 0 rows, the pattern or value is probably wrong: check the listed relationship patterns and the Known Values before concluding the information is missing.
 - Pay careful attention to the specific element types, properties, and scope requested in the question.
 
-{criteria}
+{criteria}{addendum}
 ## ACTION SELECTION
 
 Choose ONE of the following actions:
@@ -188,6 +209,13 @@ def render(template: str, **values) -> str:
     return template.format(**values)
 
 
+def answer_addendum(variant: str) -> str:
+    """What a variant adds to an answer-writing prompt: nothing for ``hellin``."""
+    if variant not in PROMPT_VARIANTS:
+        raise ValueError(f"prompt variant must be one of {PROMPT_VARIANTS}: {variant!r}")
+    return "" if variant == "hellin" else "\n" + ANSWER_ADDENDUM
+
+
 def static_generator_messages(question: str, schema: str):
     return [
         {"role": "system", "content": render(
@@ -197,21 +225,22 @@ def static_generator_messages(question: str, schema: str):
     ]
 
 
-def synthesizer_messages(question: str, cypher: str, result: str):
+def synthesizer_messages(question: str, cypher: str, result: str, variant: str = "hellin"):
     return [
         {"role": "system", "content": render(
-            SYNTHESIZER_SYSTEM, criteria=QUALITY_CRITERIA, json_rules=JSON_RULES)},
+            SYNTHESIZER_SYSTEM, criteria=QUALITY_CRITERIA, addendum=answer_addendum(variant),
+            json_rules=JSON_RULES)},
         {"role": "user", "content": render(
             SYNTHESIZER_USER, question=question, cypher=cypher or "(none)", result=result)},
     ]
 
 
 def agent_messages(question: str, schema: str, previous: str, *,
-                   max_steps: int, max_rows: int, timeout: float):
+                   max_steps: int, max_rows: int, timeout: float, variant: str = "hellin"):
     return [
         {"role": "system", "content": render(
             AGENT_SYSTEM, role=ROLE, schema=schema, guidelines=QUERY_GUIDELINES,
-            criteria=QUALITY_CRITERIA, json_rules=JSON_RULES,
+            criteria=QUALITY_CRITERIA, addendum=answer_addendum(variant), json_rules=JSON_RULES,
             max_steps=max_steps, max_rows=max_rows, timeout=timeout)},
         {"role": "user", "content": render(AGENT_USER, question=question, previous=previous)},
     ]

@@ -19,10 +19,13 @@ Re-running the same command resumes: a cell whose latest record in
 session loses nothing. A judge failure keeps the paid episode (``judgement:
 null`` plus ``judge_error``) and the resume judges it without re-running it;
 a ``--no-judge`` run is judged the same way by a resume with the judge on. The
-LLM settings (backbone, reasoning, providers, sampling, question file) are
-stamped into ``config.json`` and a resume with different ones is refused: one
-run directory is one experimental cell. The judge may be added to an unjudged
-run, not swapped.
+LLM settings (backbone, reasoning, providers, sampling, question file, prompt
+variant) are stamped into ``config.json`` and a resume with different ones is
+refused: one run directory is one experimental cell. The judge may be added to
+an unjudged run, not swapped.
+
+``--prompt-variant ours`` adds our answer-writing addendum to Hellin's prompts
+(``prompts.ANSWER_ADDENDUM``); the default ``hellin`` leaves them unchanged.
 
 ``--questions`` asks the questions of another JSONL file (an authored set) in
 the testsets' row schema instead of each model's IFC-Bench testset; rows go to
@@ -59,6 +62,7 @@ from neo4j import GraphDatabase
 from src.agent import loop
 from src.agent.context import build_graph_context
 from src.agent.llm import REASONING_MODES, ChatClient, client_from_spec
+from src.agent.prompts import PROMPT_VARIANTS
 from src.agent.tools import GraphTools
 from src.config import get_settings
 from src.constraints.cfg_grammar import grammar_from_summary
@@ -319,6 +323,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--provider", help="Pin the backbone's OpenRouter provider(s), comma-separated, e.g. z-ai")
     p.add_argument("--grammar", choices=GRAMMARS, default="none",
                    help="cfg: constrain query-writing replies to the graph's grammar (vLLM only)")
+    p.add_argument("--prompt-variant", choices=PROMPT_VARIANTS, default="hellin",
+                   help="hellin: Hellin's prompts as published; ours: plus our answer-writing "
+                        "addendum on the answer-writing calls (prompts.ANSWER_ADDENDUM)")
     p.add_argument("--judge", default=DEFAULT_JUDGE, help=f"Default: {DEFAULT_JUDGE}")
     p.add_argument("--judge-provider", help="Pin the judge's OpenRouter provider(s), e.g. z-ai")
     p.add_argument("--no-judge", action="store_true",
@@ -406,6 +413,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     }
     if args.grammar != "none":  # absent when off, so older runs still resume
         settings_stamp["grammar"] = args.grammar
+    if args.prompt_variant != "hellin":  # likewise
+        settings_stamp["prompt_variant"] = args.prompt_variant
     if args.questions:  # likewise; question ids of two sets may collide, so a set is a cell
         questions_sha256 = hashlib.sha256(args.questions.read_bytes()).hexdigest()
         settings_stamp["questions"] = questions_sha256
@@ -418,7 +427,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         settings_stamp = resumed
     config.update({"settings": settings_stamp, "llm": args.llm,
                    "judge": settings_stamp["judge"], "paradigms": paradigms,
-                   "split": args.split, "state": args.state, "max_steps": args.max_steps})
+                   "split": args.split, "state": args.state, "max_steps": args.max_steps,
+                   "prompt_variant": args.prompt_variant})
 
     driver = connect()
     tools = GraphTools(driver)
@@ -468,6 +478,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             def cell(q: Dict[str, Any], paradigm: str) -> Dict[str, Any]:
                 kwargs = {"max_steps": args.max_steps} if paradigm == "agentic" else {}
                 kwargs["grammar"] = grammars[paradigm]
+                kwargs["prompt_variant"] = args.prompt_variant
                 episode = PARADIGMS[paradigm](q["id"], q["question"], schema, llm, tools, **kwargs)
                 rec = {"model_id": mid, "question_id": q["id"], "paradigm": paradigm,
                        "category": q["category"], "split": q["split"],

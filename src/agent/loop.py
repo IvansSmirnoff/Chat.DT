@@ -23,6 +23,11 @@ the agent's ``step_limit``; in the agentic loop it costs a step.
 ``grammar`` (vLLM only, ``src/constraints/cfg_grammar.py``) constrains the calls
 that write a query: the single-shot generator and every agent step. The
 synthesiser is never constrained: it writes prose.
+
+``prompt_variant`` (``prompts.PROMPT_VARIANTS``) picks the answer-writing
+instructions: ``ours`` adds ``prompts.ANSWER_ADDENDUM`` to the synthesiser and
+the agent prompts, never to the generator. It changes prompt text only, not the
+reply envelope, so the grammar is the same under both. The episode records it.
 """
 
 from __future__ import annotations
@@ -99,6 +104,7 @@ class Episode:
     providers: List[str] = field(default_factory=list)
     calls: List[Dict[str, Any]] = field(default_factory=list)
     wall_s: float = 0.0
+    prompt_variant: str = "hellin"
 
     def account(self, c: Completion, role: str) -> None:
         self.llm_calls += 1
@@ -164,8 +170,10 @@ def _ask(llm: ChatClient, messages: List[Dict[str, str]], episode: Episode,
 
 
 def single_shot(question_id: int, question: str, schema: str,
-                llm: ChatClient, tools: GraphTools, grammar: Optional[str] = None) -> Episode:
-    episode = Episode(question_id, question, "single_shot", llm.spec or llm.model)
+                llm: ChatClient, tools: GraphTools, grammar: Optional[str] = None,
+                prompt_variant: str = "hellin") -> Episode:
+    episode = Episode(question_id, question, "single_shot", llm.spec or llm.model,
+                      prompt_variant=prompt_variant)
     start = time.monotonic()
     try:
         # The prompt asks for a query. A generator that answers outright is taken
@@ -183,7 +191,7 @@ def single_shot(question_id: int, question: str, schema: str,
             else:
                 observation = NO_QUERY_RESULT
             final = _ask(llm, prompts.synthesizer_messages(
-                question, gen.cypher, _clip(observation, RESULT_CHARS)), episode,
+                question, gen.cypher, _clip(observation, RESULT_CHARS), prompt_variant), episode,
                 ("final_answer",), "synthesizer")
             episode.answer = final.answer
     except TokenLimit as exc:
@@ -217,14 +225,16 @@ def _previous_attempts(steps: List[Step]) -> str:
 
 def agentic(question_id: int, question: str, schema: str,
             llm: ChatClient, tools: GraphTools, max_steps: int = MAX_STEPS,
-            grammar: Optional[str] = None) -> Episode:
-    episode = Episode(question_id, question, "agentic", llm.spec or llm.model)
+            grammar: Optional[str] = None, prompt_variant: str = "hellin") -> Episode:
+    episode = Episode(question_id, question, "agentic", llm.spec or llm.model,
+                      prompt_variant=prompt_variant)
     start = time.monotonic()
     try:
         for index in range(1, max_steps + 1):
             messages = prompts.agent_messages(
                 question, schema, _previous_attempts(episode.steps),
                 max_steps=max_steps, max_rows=tools.max_rows, timeout=tools.timeout_s,
+                variant=prompt_variant,
             )
             completion = llm.complete(messages, **_constrained(grammar))
             episode.account(completion, "agent")

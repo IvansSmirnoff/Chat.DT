@@ -3,13 +3,15 @@
 No Neo4j and no network: the LLM is scripted and the graph tools are faked.
 """
 
+import hashlib
 import json
+import re
 from pathlib import Path
 
 import httpx
 import pytest
 
-from src.agent import loop
+from src.agent import loop, prompts
 from src.agent.actions import ActionParseError, first_json_object, parse_action
 from src.agent.llm import ChatClient, Completion, LLMError
 from src.agent.tools import QueryResult
@@ -422,3 +424,102 @@ def test_run_refuses_to_resume_with_other_settings(monkeypatch, tmp_path):
                   "--llm", "openrouter:z-ai/glm-4.5-air", "--reasoning", "off",
                   "--run", "r", "--out-root", str(tmp_path),
                   "--manifest", "data/ifcbench/manifest.yaml"])
+
+
+# -----------------------------------------------------------------------------
+# Prompt variants
+# -----------------------------------------------------------------------------
+
+# sha256 of the prompts as ported from Hellin, rendered with the inputs below
+# (taken before --prompt-variant existed). Update only on purpose: a change
+# here changes what the hellin arm is compared against.
+HELLIN_SHA256 = {
+    "generator": "c96f204a7695809b574b1791f5b4255237acc4206eb530da4aebc530a10260f8",
+    "synthesizer": "950e4b0eeaa0b0ae60aface2ad28538003223bab00af1c2e158a9a7a5870ae0f",
+    "agent": "7651257f4303a80561afa1bd8030d2fbb95c8fafeeeb73c33abafa633ec31870",
+}
+AGENT_KW = {"max_steps": 25, "max_rows": 50, "timeout": 30.0}
+
+
+def _sha(messages):
+    return hashlib.sha256(json.dumps(messages, ensure_ascii=False).encode()).hexdigest()
+
+
+def _rendered(**variant):
+    return {
+        "generator": prompts.static_generator_messages("Q?", "SCHEMA"),
+        "synthesizer": prompts.synthesizer_messages("Q?", "MATCH (n) RETURN n", "RESULT", **variant),
+        "agent": prompts.agent_messages("Q?", "SCHEMA", "PREV", **AGENT_KW, **variant),
+    }
+
+
+def test_default_prompts_are_hellins_byte_for_byte():
+    default = _rendered()
+    assert {k: _sha(m) for k, m in default.items()} == HELLIN_SHA256
+    assert _rendered(variant="hellin") == default
+
+
+def test_ours_adds_the_addendum_to_the_answer_writing_prompts_only():
+    hellin, ours = _rendered(), _rendered(variant="ours")
+    block = "\n" + prompts.ANSWER_ADDENDUM
+    for call in ("synthesizer", "agent"):
+        system = ours[call][0]["content"]
+        assert system.count(prompts.ANSWER_ADDENDUM) == 1
+        assert system.replace(block, "", 1) == hellin[call][0]["content"]  # nothing else moved
+        assert ours[call][1] == hellin[call][1]                             # user turn untouched
+    # After Hellin's criteria (and the synthesiser's abstain line), before the reply format.
+    synth = ours["synthesizer"][0]["content"]
+    assert synth.index("(see ABSTENTION).") < synth.index("## ANSWER WRITING") < synth.index("## OUTPUT FORMAT")
+    agent = ours["agent"][0]["content"]
+    assert agent.index("### 5. ABSTENTION") < agent.index("## ANSWER WRITING") < agent.index("## ACTION SELECTION")
+    # The generator only writes a query: it has no variant.
+    assert "ANSWER WRITING" not in json.dumps(ours["generator"])
+    with pytest.raises(ValueError, match="prompt variant"):
+        prompts.synthesizer_messages("Q?", "", "R", variant="mine")
+
+
+def test_addendum_is_generic_and_short():
+    assert not re.search(r"categor|Ifc[A-Z]|\bQ\d", prompts.ANSWER_ADDENDUM, re.IGNORECASE)
+    assert len(prompts.ANSWER_ADDENDUM.split()) < 160
+
+
+def test_ours_reaches_the_answer_calls_and_leaves_the_grammar_alone():
+    class Recording(ScriptedLLM):
+        def complete(self, messages, **kw):
+            self.kwargs = getattr(self, "kwargs", []) + [kw]
+            return super().complete(messages)
+
+    g = {"structured_outputs": {"grammar": "G"}}
+    query = "MATCH (d:IfcDoor) RETURN count(d)"
+    llm = Recording([_act(thoughts="q", cypher=query), _act(thoughts="s", answer="254 doors")])
+    ep = loop.single_shot(1, "How many doors?", "SCHEMA", llm, FakeTools(), grammar="G",
+                          prompt_variant="ours")
+    assert llm.kwargs == [g, {}]
+    assert llm.calls[0] == prompts.static_generator_messages("How many doors?", "SCHEMA")
+    assert prompts.ANSWER_ADDENDUM in llm.calls[1][0]["content"]
+    assert ep.to_dict()["prompt_variant"] == "ours"
+
+    llm = Recording([_act(action="cypher", thoughts="q", cypher=query),
+                     _act(action="final_answer", thoughts="s", answer="254")])
+    ep = loop.agentic(1, "How many doors?", "SCHEMA", llm, FakeTools(), grammar="G",
+                      prompt_variant="ours")
+    assert llm.kwargs == [g, g]
+    assert all(prompts.ANSWER_ADDENDUM in call[0]["content"] for call in llm.calls)
+    assert ep.to_dict()["prompt_variant"] == "ours"
+
+    llm = ScriptedLLM([_act(action="final_answer", thoughts="s", answer="254")])
+    ep = loop.agentic(1, "How many doors?", "SCHEMA", llm, FakeTools())
+    assert prompts.ANSWER_ADDENDUM not in llm.calls[0][0]["content"]
+    assert ep.to_dict()["prompt_variant"] == "hellin"
+
+
+def test_an_answer_in_the_addendums_style_fits_the_agent_grammar():
+    pytest.importorskip("xgrammar")
+    from src.constraints.cfg_grammar import build_reply_grammar, check_reply
+
+    grammar = build_reply_grammar(["IfcSpace"], ["CONTAINS"], ["Name"], reply="agent")
+    answer = ('Found 12 of the 14 rooms (IfcSpace nodes on the storey, 2 without a Name excluded). '
+              'Assuming "office" means a room whose name contains "Office", the answer is 12.\n'
+              'Assuming a 2.5 m ceiling height (general knowledge, not from the BIM model), ...')
+    reply = json.dumps({"action": "final_answer", "thoughts": "partial", "answer": answer})
+    assert check_reply(grammar, reply) is None
