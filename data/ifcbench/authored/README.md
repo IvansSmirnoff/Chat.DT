@@ -124,3 +124,13 @@ query error. It leaves the base snapshot loaded (`--leave` changes that). It
 wipes and restores the database, so do not run it while a run is using Neo4j.
 The snapshots are built by `python -m src.agent.run ... --snapshots-only`
 (`--state topology` for the enriched one) if they are missing.
+
+## Changes
+
+* **v1.1 (2026-10-30):** 9006 reworded. It asked for rooms "because every door
+  they have is an exterior door", which the mechanical yard 1F01 and the roof
+  2R02 also satisfy literally (each has a single door of an exterior type, but
+  that door leads into the building). The question now asks for indoor rooms
+  with no door or open passage to any other space, which is what the answer and
+  both gold queries always encoded; the answer is unchanged. Runs made before
+  this change (all runs of 2026-10-30) asked the old wording.
