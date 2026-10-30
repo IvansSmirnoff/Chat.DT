@@ -19,6 +19,7 @@ from src.eval.scoring import (
     calculate_ea_from_ids,
     tokenize_record,
 )
+from src.utils.ifc_classes import supertypes
 
 logger = logging.getLogger(__name__)
 
@@ -354,6 +355,34 @@ def collect_graph_stats(driver) -> Dict[str, Any]:
     return stats
 
 
+def most_specific_label(labels: List[str], label_counts: Dict[str, int]) -> Optional[str]:
+    """The leaf IFC class among one node's labels.
+
+    Nodes carry the whole IFC supertype chain as labels, so the rarest label is
+    the most specific one -- ``IfcSpace`` (189) rather than ``IfcProduct``
+    (5,949) -- unless it ties. It ties whenever a class has a single subclass in
+    the model: every opening on the clinic is an ``IfcOpeningElement``, so it,
+    ``IfcFeatureElementSubtraction`` and ``IfcFeatureElement`` all count 403,
+    and the prompt named FILLS's target after whichever ``labels()`` listed
+    first. Counts cannot break that tie (the labels sit on exactly the same
+    nodes); the schema can. Among the rarest labels, take the one whose
+    supertypes cover most of the node's other labels: the deepest.
+    """
+    known = [l for l in labels if l in label_counts] or list(labels)
+    if not known:
+        return None
+    rarest = min(label_counts.get(l, 1 << 30) for l in known)
+    tied = [l for l in known if label_counts.get(l, 1 << 30) == rarest]
+    if len(tied) == 1:
+        return tied[0]
+    others = set(known)
+
+    def depth(label: str) -> int:
+        return max((len(chain & others) for chain in supertypes(label)), default=0)
+
+    return min(tied, key=lambda l: (-depth(l), l))
+
+
 def collect_relationship_signatures(
     driver, label_counts: Dict[str, int]
 ) -> List[List[str]]:
@@ -367,16 +396,8 @@ def collect_relationship_signatures(
     model generalised CONTAINS to spaces and every "per floor" query returned
     zero rows.
 
-    Nodes carry the whole IFC supertype chain as labels, so the most specific
-    label is approximated by the rarest one — ``IfcSpace`` (189) rather than
-    ``IfcProduct`` (5,949).
+    Each side is named by its leaf class (:func:`most_specific_label`).
     """
-    def most_specific(labels: List[str]) -> Optional[str]:
-        known = [l for l in labels if l in label_counts] or list(labels)
-        if not known:
-            return None
-        return min(known, key=lambda l: label_counts.get(l, 1 << 30))
-
     signatures = set()
     with driver.session() as session:
         rel_types = [
@@ -392,8 +413,8 @@ def collect_relationship_signatures(
                 "RETURN DISTINCT labels(a) AS la, labels(b) AS lb"
             )
             for record in result:
-                src = most_specific(record["la"])
-                dst = most_specific(record["lb"])
+                src = most_specific_label(record["la"], label_counts)
+                dst = most_specific_label(record["lb"], label_counts)
                 if src and dst:
                     signatures.add((src, rtype, dst))
 

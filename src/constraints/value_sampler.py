@@ -30,6 +30,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from src.utils.ifc_classes import is_subtype
+
 from .vocabulary_merger import CombinedVocabulary, PropertyType
 
 logger = logging.getLogger(__name__)
@@ -304,9 +306,18 @@ class _TemplateContext:
         taught the model to reach spaces that way; on Building 15 spaces hang
         off the storey by DECOMPOSES, so every query it inspired returned
         nothing.
+
+        Signatures name the leaf class, so ``dst`` also matches a signature
+        on one of its subclasses: where every wall is an
+        ``IfcWallStandardCase``, storey -> ``IfcWall`` is still a real
+        traversal (the nodes carry both labels).
         """
-        for s, rel, d in self.vocab.relationship_signatures:
+        signatures = self.vocab.relationship_signatures
+        for s, rel, d in signatures:
             if s == src and d == dst:
+                return rel
+        for s, rel, d in signatures:
+            if is_subtype(s, src) and is_subtype(d, dst):
                 return rel
         return None
 

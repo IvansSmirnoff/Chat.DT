@@ -375,6 +375,33 @@ def test_few_shots_use_the_relationship_the_graph_actually_has():
     assert "[:CONTAINS]" not in cypher, cypher
 
 
+def test_few_shots_reach_a_class_through_its_leaf_signature():
+    """Every wall is an IfcWallStandardCase, so the signature names that leaf;
+    storey -> IfcWall is still a traversal the graph has."""
+    pytest.importorskip("ifcopenshell")
+    vocab = _build_vocab(
+        {
+            "IfcBuildingStorey": {"Name": PropertyType.STRING},
+            "IfcWall": {"Name": PropertyType.STRING},
+        },
+        signatures=[("IfcBuildingStorey", "CONTAINS", "IfcWallStandardCase")],
+    )
+    enumerations = {"IfcBuildingStorey.Name": ["Level 2"]}
+
+    regex_responses: List[tuple] = []
+    regex_responses += _label_responses({"IfcBuildingStorey": 3, "IfcWall": 40})
+    regex_responses += _rel_responses(["CONTAINS"])
+    regex_responses.append((lambda q: True, []))
+
+    examples = generate_few_shot_examples(
+        _FakeDriver(regex_responses=regex_responses), vocab, enumerations, n=5
+    )
+    assert (
+        "MATCH (s:IfcBuildingStorey)-[:CONTAINS]->(d:IfcWall) "
+        "WHERE s.Name = 'Level 2' RETURN count(d)"
+    ) in [ex["cypher"] for ex in examples]
+
+
 def test_few_shots_omit_traversals_absent_from_signatures():
     """No signature -> no relationship example at all. Silence beats a wrong hint."""
     vocab = _build_vocab(
