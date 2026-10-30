@@ -34,7 +34,9 @@ graph snapshots of the selected models and exits, without an LLM.
 
 ``--state`` picks the graph: ``base`` (our ETL), ``topology`` (base + the
 topology enrichment) or ``generic`` (rung 0: the ECPPM instance graph,
-``src/etl/generic_loader.py``). A missing snapshot is built from the IFC. The
+``src/etl/generic_loader.py``). A missing snapshot is built from the IFC; so is
+a topology snapshot whose ``topology_rev`` is older than the rules' (the old
+file is kept as ``<model_id>.topology-v<rev>.jsonl.gz``). The
 generic graph gets its own schema block and prompt frame
 (``context.GenericContext``, ``prompts.FRAMES``) and no grammar.
 
@@ -76,7 +78,7 @@ from src.constraints.cfg_grammar import grammar_from_summary
 from src.etl import generic_loader
 from src.etl.graph_cache import fingerprint, graph_summary, read_header, restore_graph
 from src.etl.manifest import cache_path, load_manifest, resolve
-from src.etl.topology import ENRICHMENT, apply_topology, compute_topology
+from src.etl.topology import ENRICHMENT, TOPOLOGY_REV, apply_topology, compute_topology
 from src.eval.judge import DEFAULT_JUDGE, judge_answer, make_judge
 
 logger = logging.getLogger("agent.run")
@@ -212,15 +214,49 @@ def build_snapshot(driver, manifest, entry, snapshot: Path, etl_report_dir: Path
     return header["fingerprint"]
 
 
+def stale_topology_rev(snapshot: Path) -> Optional[int]:
+    """The topology revision of a snapshot built by older rules than ``TOPOLOGY_REV``, else None.
+
+    The header's ``meta.topology_rev``; snapshots from before it was stamped
+    carry none and are revision 1.
+    """
+    rev = int(read_header(snapshot).get("meta", {}).get("topology_rev") or 1)
+    return rev if rev < TOPOLOGY_REV else None
+
+
+def retire_stale_snapshot(manifest, entry, state: str, policy: str = "auto") -> Optional[Path]:
+    """Move a stale topology snapshot aside, so that it counts as missing and is rebuilt.
+
+    It is kept as ``<model_id>.topology-v<rev>.jsonl.gz``. ``never`` refuses
+    a stale snapshot instead (nothing is moved): it may not be rebuilt.
+    """
+    snapshot = cache_path(manifest, entry, state)
+    if state != ENRICHMENT or not snapshot.is_file():
+        return None
+    rev = stale_topology_rev(snapshot)
+    if rev is None:
+        return None
+    if policy != "auto":
+        raise RuntimeError(f"{entry['model_id']}: {snapshot.name} is topology rev {rev}, the rules are "
+                           f"rev {TOPOLOGY_REV}; rebuild it (--restore auto)")
+    kept = snapshot.with_name(f"{entry['model_id']}.{state}-v{rev}.jsonl.gz")
+    snapshot.replace(kept)
+    logger.info("%s: %s is topology rev %d (rules: rev %d), kept as %s; rebuilding",
+                entry["model_id"], snapshot.name, rev, TOPOLOGY_REV, kept.name)
+    return kept
+
+
 def ensure_graph(driver, manifest, entry, state: str, policy: str,
                  etl_report_dir: Path) -> Dict[str, Any]:
     """Make the loaded graph the manifest's snapshot for this model, or refuse.
 
     ``auto``: restore the snapshot if the live graph differs, and build the
-    snapshot first (ETL + export) if there is none. ``never``: only accept a
-    graph that already matches.
+    snapshot first (ETL + export) if there is none or it is a topology
+    snapshot of an older revision. ``never``: only accept a graph that already
+    matches.
     """
     snapshot = cache_path(manifest, entry, state)
+    retire_stale_snapshot(manifest, entry, state, policy)
     if not snapshot.is_file():
         if policy != "auto" or state not in BUILDABLE_STATES:
             raise RuntimeError(f"{entry['model_id']}: no {state} snapshot at {snapshot}")
@@ -245,16 +281,18 @@ def prepare_snapshots(driver, manifest, entries, state: str, etl_report_dir: Pat
 
     A snapshot already on disk is left alone, not restored: restoring only
     re-checks it, and Tier-B prep would wipe and reload 31 graphs for that.
-    One model failing does not stop the others; the exit code reports it.
+    A topology snapshot of an older revision counts as missing (it is kept as
+    ``<model_id>.topology-v<rev>.jsonl.gz``). One model failing does not stop
+    the others; the exit code reports it.
     """
     failed = []
     for entry in entries:
         mid = entry["model_id"]
         snapshot = cache_path(manifest, entry, state)
-        if snapshot.is_file():
-            logger.info("%s: %s snapshot present (%s)", mid, state, snapshot.name)
-            continue
         try:
+            if snapshot.is_file() and not (state == ENRICHMENT and stale_topology_rev(snapshot)):
+                logger.info("%s: %s snapshot present (%s)", mid, state, snapshot.name)
+                continue
             identity = ensure_graph(driver, manifest, entry, state, "auto", etl_report_dir)
         except Exception as exc:  # noqa: BLE001 - one model must not stop the batch
             logger.error("%s: no %s snapshot built: %s", mid, state, exc)
