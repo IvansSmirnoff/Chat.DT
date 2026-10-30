@@ -1,0 +1,35 @@
+Applies to: src/etl/generic_loader.py (port of pipelines/cypher/ifc2neo4j/ifc_to_graph.py)
+and prompts.GENERIC_SCHEMA in src/agent/prompts.py (the "Neo4j graph schema and essentials"
+section of pipelines/cypher/system_prompt.jinja2), from the companion code of
+
+  C. Du, S. Hellin, S. Fuchs, A. Borrmann, "Querying BIM Models with LLM Agents: A Comparison
+  of Data Representations", ECPPM 2026. doi:10.5281/zenodo.22679659 (repository commit 85eaf24).
+
+Their importer is in turn adapted from ConMan2 (https://github.com/seb-esser/ConMan2,
+Sebastian Esser et al., TUM; MIT): S. Esser, S. Vilgertshofer, A. Borrmann, "Graph-based
+version control for asynchronous BIM collaboration", Advanced Engineering Informatics 53 (2022)
+101664, doi:10.1016/j.aei.2022.101664.
+
+The license of the ECPPM repository, reproduced as its terms require:
+
+MIT License
+
+Copyright (c) 2026 Changyu Du, Sylvain Hellin, Stefan Fuchs, André Borrmann
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

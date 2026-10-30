@@ -97,10 +97,10 @@ def fingerprint(summary: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def loader_revision(root: Path = Path(".")) -> Optional[str]:
+def loader_revision(root: Path = Path("."), sources: Tuple[str, ...] = LOADER_SOURCES) -> Optional[str]:
     digest = hashlib.sha256()
     found = False
-    for rel in LOADER_SOURCES:
+    for rel in sources:
         path = root / rel
         if path.exists():
             digest.update(rel.encode())
@@ -190,13 +190,16 @@ def export_graph(driver, out_path: Path, meta: Dict[str, Any]) -> Dict[str, Any]
 
 
 def export_with_meta(driver, out_path: Path, model_id: str, enrichment: str = "base",
-                     ifc: Optional[Path] = None) -> Dict[str, Any]:
+                     ifc: Optional[Path] = None,
+                     loader_sources: Tuple[str, ...] = LOADER_SOURCES) -> Dict[str, Any]:
     """Export, and stamp the live graph with the metadata the snapshot carries.
 
     The exported graph is now a known state, so the ``(:_GraphMeta)`` node says
     which one -- exactly what a later restore of the same file writes.
+    ``loader_sources``: the files that built it (the generic graph has its own).
     """
-    meta = {"model_id": model_id, "enrichment": enrichment, "loader_rev": loader_revision()}
+    meta = {"model_id": model_id, "enrichment": enrichment,
+            "loader_rev": loader_revision(sources=loader_sources)}
     if ifc:
         meta["source_ifc"] = str(ifc)
         meta["source_sha256"] = sha256_file(Path(ifc))
