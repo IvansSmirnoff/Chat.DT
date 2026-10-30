@@ -32,6 +32,12 @@ the testsets' row schema instead of each model's IFC-Bench testset; rows go to
 the model ``<project>__<ifc_model>``. ``--snapshots-only`` builds the missing
 graph snapshots of the selected models and exits, without an LLM.
 
+``--state`` picks the graph: ``base`` (our ETL), ``topology`` (base + the
+topology enrichment) or ``generic`` (rung 0: the ECPPM instance graph,
+``src/etl/generic_loader.py``). A missing snapshot is built from the IFC. The
+generic graph gets its own schema block and prompt frame
+(``context.GenericContext``, ``prompts.FRAMES``) and no grammar.
+
 Usage:
     python -m src.agent.run --model-id dental_clinic__arc --split train \\
         --llm openrouter:z-ai/glm-4.5-air --provider z-ai --reasoning off --run clinic_smoke
@@ -40,6 +46,7 @@ Usage:
     python -m src.agent.run --questions data/ifcbench/authored/dental_clinic__arc.jsonl \\
         --split all --state topology --llm ... --run clinic_authored_topology
     python -m src.agent.run --manifest-split test --snapshots-only --run tierb_snapshots
+    python -m src.agent.run --model-id dental_clinic__arc --state generic --snapshots-only --run prep
     python -m src.agent.run --manifest-split test --run full_glm45air ...
 """
 
@@ -60,12 +67,13 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from neo4j import GraphDatabase
 
 from src.agent import loop
-from src.agent.context import build_graph_context
+from src.agent.context import build_generic_context, build_graph_context
 from src.agent.llm import REASONING_MODES, ChatClient, client_from_spec
 from src.agent.prompts import PROMPT_VARIANTS
 from src.agent.tools import GraphTools
 from src.config import get_settings
 from src.constraints.cfg_grammar import grammar_from_summary
+from src.etl import generic_loader
 from src.etl.graph_cache import fingerprint, graph_summary, read_header, restore_graph
 from src.etl.manifest import cache_path, load_manifest, resolve
 from src.etl.topology import ENRICHMENT, apply_topology, compute_topology
@@ -74,6 +82,9 @@ from src.eval.judge import DEFAULT_JUDGE, judge_answer, make_judge
 logger = logging.getLogger("agent.run")
 
 PARADIGMS = {"single_shot": loop.single_shot, "agentic": loop.agentic}
+GENERIC = generic_loader.STATE
+# Graph states a missing snapshot can be built for.
+BUILDABLE_STATES = ("base", ENRICHMENT, GENERIC)
 # Which reply grammar constrains each paradigm's query-writing calls.
 GRAMMAR_REPLY = {"single_shot": "generator", "agentic": "agent"}
 GRAMMARS = ("none", "cfg")
@@ -167,7 +178,8 @@ def build_snapshot(driver, manifest, entry, snapshot: Path, etl_report_dir: Path
 
     ``base``: ETL the model's IFC file. ``topology``: make the base graph the
     loaded one (restoring or building it), apply the topology enrichment
-    computed from the same IFC, and export that.
+    computed from the same IFC, and export that. ``generic``: wipe and load the
+    IFC with the generic loader.
     """
     from src.etl.graph_cache import export_with_meta
 
@@ -175,6 +187,13 @@ def build_snapshot(driver, manifest, entry, snapshot: Path, etl_report_dir: Path
     if not ifc.is_file():
         raise RuntimeError(f"{entry['model_id']}: {ifc} missing; run scripts/ifcbench/fetch.py")
     etl_report_dir.mkdir(parents=True, exist_ok=True)
+    if state == GENERIC:
+        logger.info("No %s snapshot for %s: loading %s as the instance graph",
+                    state, entry["model_id"], ifc.name)
+        stats = generic_loader.load(driver, ifc)
+        (etl_report_dir / f"{entry['model_id']}.{state}.json").write_text(json.dumps(stats, indent=2))
+        return export_with_meta(driver, snapshot, entry["model_id"], state, ifc,
+                                loader_sources=generic_loader.SOURCES)["fingerprint"]
     if state == ENRICHMENT:
         ensure_graph(driver, manifest, entry, "base", "auto", etl_report_dir)
         logger.info("No %s snapshot for %s: enriching the base graph", state, entry["model_id"])
@@ -203,7 +222,7 @@ def ensure_graph(driver, manifest, entry, state: str, policy: str,
     """
     snapshot = cache_path(manifest, entry, state)
     if not snapshot.is_file():
-        if policy != "auto" or state not in ("base", ENRICHMENT):
+        if policy != "auto" or state not in BUILDABLE_STATES:
             raise RuntimeError(f"{entry['model_id']}: no {state} snapshot at {snapshot}")
         return {"fingerprint": build_snapshot(driver, manifest, entry, snapshot, etl_report_dir, state),
                 "restored": False, "built": True}
@@ -332,7 +351,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="Store episodes unjudged; a later resume with the judge on judges them")
     p.add_argument("--run", required=True, help="Run name (results/ifcbench/runs/<run>)")
     p.add_argument("--state", default="base",
-                   help=f"Graph state snapshot to use: base, or {ENRICHMENT} (built from base if missing)")
+                   help=f"Graph state snapshot to use: base, {ENRICHMENT} (built from base if "
+                        f"missing) or {GENERIC} (the ECPPM instance graph, built from the IFC)")
     p.add_argument("--restore", choices=["auto", "never"], default="auto",
                    help="auto: restore the snapshot if needed, building it (ETL) if missing")
     p.add_argument("--snapshots-only", action="store_true",
@@ -349,6 +369,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.error("--snapshots-only builds missing snapshots; it cannot go with --restore never")
     if not args.snapshots_only and not args.llm:
         p.error("--llm is required (except with --snapshots-only)")
+    if args.grammar != "none" and args.state == GENERIC:
+        p.error(f"--grammar {args.grammar} cannot go with --state {GENERIC}: a grammar over the "
+                f"generic graph's labels ({', '.join(generic_loader.LABELS)}) and its one edge "
+                f"type :{generic_loader.REL_TYPE} constrains nothing; use --grammar none")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("neo4j").setLevel(logging.ERROR)
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -372,6 +396,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         entries = [m for m in manifest["models"] if m["model_id"] in (question_rows or {})]
     paradigms = args.paradigm or ["single_shot", "agentic"]
+    frame = "generic" if args.state == GENERIC else "typed"   # prompts.FRAMES
     out = args.out_root / args.run
 
     def connect():
@@ -458,7 +483,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             if todo:
                 identity = ensure_graph(driver, manifest, entry, args.state, args.restore,
                                         etl_report_dir=out / "etl")
-                ctx = build_graph_context(driver, resolve(manifest, entry["paths"]["ifc"]))
+                ctx = (build_generic_context(driver) if args.state == GENERIC else
+                       build_graph_context(driver, resolve(manifest, entry["paths"]["ifc"])))
                 schema = ctx.schema_prompt()
                 (out / "context" / f"{mid}.txt").write_text(schema, encoding="utf-8")
                 config["models"][mid] = {**ctx.graph, **identity}
@@ -479,6 +505,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 kwargs = {"max_steps": args.max_steps} if paradigm == "agentic" else {}
                 kwargs["grammar"] = grammars[paradigm]
                 kwargs["prompt_variant"] = args.prompt_variant
+                kwargs["frame"] = frame
                 episode = PARADIGMS[paradigm](q["id"], q["question"], schema, llm, tools, **kwargs)
                 rec = {"model_id": mid, "question_id": q["id"], "paradigm": paradigm,
                        "category": q["category"], "split": q["split"],

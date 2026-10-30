@@ -9,6 +9,9 @@ restore + rebuild, a few seconds each.
 
 Order matters: graph stats are merged *before* sampling, so values and
 few-shots see the full label set and none of the unwritten properties.
+
+The generic instance graph (state ``generic``) gets :class:`GenericContext`
+instead: nothing of the above applies to it.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.agent.prompts import GENERIC_SCHEMA
 from src.constraints.context_builder import ContextBuilder
 from src.constraints.ids_parser import IDSSchema, parse_ids_file
 from src.constraints.value_sampler import generate_few_shot_examples, sample_value_enumerations
@@ -66,6 +70,54 @@ def graph_identity(driver) -> Dict[str, Any]:
         "loader_rev": meta.get("loader_rev"),
         "fingerprint": live,
     }
+
+
+INSTANCE_LABELS = ("PrimaryNode", "ConnectionNode", "SecondaryNode", "InlineNode")
+
+
+@dataclass
+class GenericContext:
+    """Prompt context of the generic instance graph (state ``generic``).
+
+    Our builder above cannot describe it: vocabulary, known values and
+    few-shots all assume a label per IFC class and typed edges, and here every
+    node is one of four labels and every edge is ``:rel``. So the schema block
+    is ECPPM's own description of this graph (``prompts.GENERIC_SCHEMA``,
+    verbatim) plus, ours, the live ``EntityType`` counts per label -- the
+    stand-in for the typed schema's label list, so the single-shot arm (which
+    cannot run a discovery query) knows which classes exist.
+    """
+    entity_types: Dict[str, Dict[str, int]]   # label -> {EntityType: count}, most common first
+    graph: Dict[str, Any] = field(default_factory=dict)
+    graph_stats: Optional[Dict[str, Any]] = None  # no grammar is built from this graph
+
+    def schema_prompt(self) -> str:
+        lines = ["## Entity types in this graph", "",
+                 "`EntityType` values per node label, with live node counts:"]
+        for label in INSTANCE_LABELS:
+            types = self.entity_types.get(label) or {}
+            listed = ", ".join(f"{t} {c}" for t, c in types.items())
+            lines.append(f"- `{label}` ({sum(types.values())}): {listed or '-'}")
+        return GENERIC_SCHEMA + "\n\n" + "\n".join(lines)
+
+
+def collect_entity_types(driver) -> Dict[str, Dict[str, int]]:
+    """``EntityType`` counts per instance label (one pass over ``:Node``)."""
+    out: Dict[str, Dict[str, int]] = {label: {} for label in INSTANCE_LABELS}
+    with driver.session() as session:
+        for r in session.run(
+            "MATCH (n:Node) "
+            "WITH [l IN labels(n) WHERE l IN $labels][0] AS label, n.EntityType AS type "
+            "RETURN label, type, count(*) AS c ORDER BY label, c DESC, type",
+            labels=list(INSTANCE_LABELS),
+        ):
+            if r["label"] is not None:
+                out[r["label"]][str(r["type"])] = r["c"]
+    return out
+
+
+def build_generic_context(driver) -> GenericContext:
+    return GenericContext(entity_types=collect_entity_types(driver), graph=graph_identity(driver))
 
 
 def build_graph_context(

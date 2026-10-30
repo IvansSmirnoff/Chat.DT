@@ -50,6 +50,7 @@ class Harness:
         self.manifest.write_text(yaml.safe_dump({"dataset": {"commit": "c"}, "models": models}))
 
         self.episodes_run, self.graphs, self.judged, self.variants = [], [], [], []
+        self.frames, self.schemas = [], []
         self.judge_fails = False
         monkeypatch.setenv("OPENROUTER_API_KEY", "k")
         monkeypatch.setattr(run, "GraphDatabase", SimpleNamespace(
@@ -60,6 +61,8 @@ class Harness:
         monkeypatch.setattr(run, "ensure_graph", self._ensure_graph)
         monkeypatch.setattr(run, "build_graph_context", lambda driver, ifc: SimpleNamespace(
             schema_prompt=lambda: "SCHEMA", graph={"model_id": "m"}, graph_stats={}))
+        monkeypatch.setattr(run, "build_generic_context", lambda driver: SimpleNamespace(
+            schema_prompt=lambda: "GENERIC SCHEMA", graph={"model_id": "m"}, graph_stats=None))
         monkeypatch.setattr(run, "judge_answer", self._judge)
         for name in run.PARADIGMS:
             monkeypatch.setitem(run.PARADIGMS, name, self._paradigm(name))
@@ -72,6 +75,8 @@ class Harness:
         def episode(qid, question, schema, llm, tools, **kwargs):
             self.episodes_run.append((qid, name))
             self.variants.append(kwargs["prompt_variant"])
+            self.frames.append(kwargs["frame"])
+            self.schemas.append(schema)
             return loop.Episode(qid, question, name, llm.spec, answer=f"answer {qid} (from a query)",
                                 cost_usd=0.01, prompt_variant=kwargs["prompt_variant"])
         return episode
@@ -286,3 +291,63 @@ def test_llm_is_required_unless_snapshots_only(harness):
         harness.main("--model-id", "clinic__arc", "--snapshots-only", "--restore", "never", llm=False)
     with pytest.raises(SystemExit):  # some model selection is still needed
         harness.main()
+
+
+# -----------------------------------------------------------------------------
+# --state generic (rung 0)
+# -----------------------------------------------------------------------------
+
+def test_generic_state_gets_its_own_context_and_frame(harness):
+    harness.main("--model-id", "clinic__arc", "--paradigm", "agentic", "--state", "generic")
+    assert harness.graphs == [("clinic__arc", "generic", "auto")]
+    assert harness.frames == ["generic"] and harness.schemas == ["GENERIC SCHEMA"]
+    assert (harness.out / "r" / "context" / "clinic__arc.txt").read_text() == "GENERIC SCHEMA"
+    assert harness.config()["settings"]["state"] == "generic"
+
+    harness.main("--model-id", "clinic__arc", "--paradigm", "agentic", run_name="typed")
+    assert harness.frames == ["generic", "typed"] and harness.schemas[-1] == "SCHEMA"
+
+
+def test_generic_state_refuses_a_grammar(harness, capsys):
+    with pytest.raises(SystemExit):
+        harness.main("--model-id", "clinic__arc", "--state", "generic", "--grammar", "cfg",
+                     "--llm", "vllm:Qwen/Qwen3-8B-AWQ", llm=False)
+    assert "constrains nothing" in capsys.readouterr().err
+    assert harness.graphs == [] and harness.episodes_run == []
+
+
+def test_snapshots_only_builds_generic_snapshots(harness):
+    assert harness.main("--model-id", "clinic__arc", "--snapshots-only", "--state", "generic",
+                        llm=False) == 0
+    assert harness.graphs == [("clinic__arc", "generic", "auto")]
+
+
+def test_a_missing_generic_snapshot_is_built_by_the_generic_loader(tmp_path, monkeypatch):
+    from src.etl import graph_cache
+    from src.etl.manifest import load_manifest
+
+    manifest_path = tmp_path / "data" / "ifcbench" / "manifest.yaml"
+    manifest_path.parent.mkdir(parents=True)
+    entry = {"model_id": "clinic__arc", "questions": {"test": 1},
+             "paths": {"ifc": "data/ifcbench/raw/arc.ifc",
+                       "graph_cache": "data/ifcbench/cache/clinic__arc.base.jsonl.gz"}}
+    manifest_path.write_text(yaml.safe_dump({"dataset": {}, "models": [entry]}))
+    (tmp_path / "data" / "ifcbench" / "raw").mkdir()
+    (tmp_path / "data" / "ifcbench" / "raw" / "arc.ifc").write_text("ISO-10303-21;")
+    manifest = load_manifest(manifest_path)
+    driver = object()
+    calls = []
+    monkeypatch.setattr(run.generic_loader, "load",
+                        lambda d, ifc: calls.append(("load", d, ifc.name)) or {"nodes": {}})
+    monkeypatch.setattr(graph_cache, "export_with_meta",
+                        lambda d, out, mid, state, ifc, loader_sources: calls.append(
+                            ("export", out.name, mid, state, loader_sources)) or {"fingerprint": "g" * 64})
+
+    with pytest.raises(RuntimeError, match="no generic snapshot"):
+        run.ensure_graph(driver, manifest, entry, "generic", "never", tmp_path / "etl")
+    identity = run.ensure_graph(driver, manifest, entry, "generic", "auto", tmp_path / "etl")
+    assert identity == {"fingerprint": "g" * 64, "restored": False, "built": True}
+    assert calls == [("load", driver, "arc.ifc"),
+                     ("export", "clinic__arc.generic.jsonl.gz", "clinic__arc", "generic",
+                      ("src/etl/generic_loader.py",))]
+    assert json.loads((tmp_path / "etl" / "clinic__arc.generic.json").read_text()) == {"nodes": {}}

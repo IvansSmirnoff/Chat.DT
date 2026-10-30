@@ -28,6 +28,9 @@ synthesiser is never constrained: it writes prose.
 instructions: ``ours`` adds ``prompts.ANSWER_ADDENDUM`` to the synthesiser and
 the agent prompts, never to the generator. It changes prompt text only, not the
 reply envelope, so the grammar is the same under both. The episode records it.
+
+``frame`` (``prompts.FRAMES``) is what the prompts say about the graph around
+the schema block: ``typed`` for our graph, ``generic`` for the instance graph.
 """
 
 from __future__ import annotations
@@ -171,7 +174,7 @@ def _ask(llm: ChatClient, messages: List[Dict[str, str]], episode: Episode,
 
 def single_shot(question_id: int, question: str, schema: str,
                 llm: ChatClient, tools: GraphTools, grammar: Optional[str] = None,
-                prompt_variant: str = "hellin") -> Episode:
+                prompt_variant: str = "hellin", frame: str = "typed") -> Episode:
     episode = Episode(question_id, question, "single_shot", llm.spec or llm.model,
                       prompt_variant=prompt_variant)
     start = time.monotonic()
@@ -179,7 +182,7 @@ def single_shot(question_id: int, question: str, schema: str,
         # The prompt asks for a query. A generator that answers outright is taken
         # at its word; one that declines (no query, no answer) leaves the
         # synthesiser to answer from nothing, as when Hellin's code fails to run.
-        gen = _ask(llm, prompts.static_generator_messages(question, schema), episode,
+        gen = _ask(llm, prompts.static_generator_messages(question, schema, frame), episode,
                    ("cypher", "final_answer", "decline"), "generator", grammar)
         if gen.kind == "final_answer":
             episode.answer = gen.answer
@@ -225,7 +228,8 @@ def _previous_attempts(steps: List[Step]) -> str:
 
 def agentic(question_id: int, question: str, schema: str,
             llm: ChatClient, tools: GraphTools, max_steps: int = MAX_STEPS,
-            grammar: Optional[str] = None, prompt_variant: str = "hellin") -> Episode:
+            grammar: Optional[str] = None, prompt_variant: str = "hellin",
+            frame: str = "typed") -> Episode:
     episode = Episode(question_id, question, "agentic", llm.spec or llm.model,
                       prompt_variant=prompt_variant)
     start = time.monotonic()
@@ -234,7 +238,7 @@ def agentic(question_id: int, question: str, schema: str,
             messages = prompts.agent_messages(
                 question, schema, _previous_attempts(episode.steps),
                 max_steps=max_steps, max_rows=tools.max_rows, timeout=tools.timeout_s,
-                variant=prompt_variant,
+                variant=prompt_variant, frame=frame,
             )
             completion = llm.complete(messages, **_constrained(grammar))
             episode.account(completion, "agent")

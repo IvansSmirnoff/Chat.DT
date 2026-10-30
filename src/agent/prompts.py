@@ -20,7 +20,18 @@ above, unchanged. ``ours`` adds ANSWER_ADDENDUM, which is ours and not Hellin's,
 to the calls that write the answer: the synthesiser and the agent (whose one
 prompt also holds FinalAnswer). The single-shot generator only writes a query
 and stays Hellin's in both variants.
+
+Graph frames (``FRAMES``): the role sentence, QUERY_GUIDELINES and the agent's
+zero-rows hint describe *our* typed graph (states ``base``/``topology``). On the
+generic instance graph (state ``generic``, ``src/etl/generic_loader.py``) every
+one of them is false -- no class labels, psets are nodes, one edge type, no
+Known Values or relationship list -- so the ``generic`` frame drops the graph
+description from the role, drops QUERY_GUIDELINES (GENERIC_SCHEMA carries its
+own Cypher tips) and points the hint at the schema block. The ``typed`` frame
+renders exactly the prompts from before frames existed.
 """
+
+from dataclasses import dataclass
 
 from src.constraints.context_builder import QUERY_GUIDELINES
 
@@ -31,6 +42,58 @@ ROLE = (
     "sets are node properties, and IFC relationships are edges. You retrieve information "
     "by writing Cypher queries against this graph."
 )
+
+GENERIC_ROLE = (
+    "You are a helpful assistant specializing in retrieving information from BIM models. "
+    "The IFC model has been loaded into a Neo4j labelled property graph, described below. "
+    "You retrieve information by writing Cypher queries against this graph."
+)
+
+# The schema block of the generic graph: the "Neo4j graph schema and essentials"
+# section of pipelines/cypher/system_prompt.jinja2 in the ECPPM 2026 companion
+# code (Du, Hellin, Fuchs, Borrmann; commit 85eaf24; MIT, notice in
+# third_party/LICENSE-ecppm), verbatim. Nothing in it names their tool or
+# harness, so nothing was edited; it describes the graph that
+# src/etl/generic_loader.py ports. Their prompt's other sections (approach,
+# discovery steps, pitfalls, answer format) are not taken: Hellin's prompts
+# below play that part in every arm.
+GENERIC_SCHEMA = """## Neo4j graph schema and essentials
+
+Node labels: `PrimaryNode` (IfcObjectDefinition + IfcPropertyDefinition), `ConnectionNode` (IfcRelationship), `SecondaryNode` (geometry, placements, IfcProperty/IfcPhysicalQuantity/IfcNamedUnit subtypes, ...), `InlineNode` (anonymous inline entities, carry `wrappedValue`). Primary/Connection/Secondary also carry `GenericNode` and `Node`. Key node properties: `GlobalId`, `EntityType`, `p21_id`, `timestamp`. IFC attributes are stored directly as node properties; `None` is stored as the string `"$"`.
+
+Edges: all use the label `:rel` with `rel_type` (the IFC attribute name causing the reference, e.g. `RelatingObject`, `RelatedObjects`, `Representation`) and `list_index` (preserves ordering of list attributes).
+
+Query recipes (filter by the `EntityType` property, NOT Neo4j labels):
+- Spatial hierarchy (Project->Site->Building->Storey): `MATCH (rel:ConnectionNode {EntityType:'IfcRelAggregates'})-[:rel {rel_type:'RelatingObject'}]->(parent:PrimaryNode), (rel)-[:rel {rel_type:'RelatedObjects'}]->(child:PrimaryNode) RETURN parent.EntityType, parent.Name, child.EntityType, child.Name`.
+- Elements on a storey: `IfcRelContainedInSpatialStructure` with `rel_type:'RelatingStructure'` -> storey and `rel_type:'RelatedElements'` -> element.
+- Property sets: `IfcRelDefinesByProperties` -> `RelatedObjects` (element) and `RelatingPropertyDefinition` -> `IfcPropertySet` -> `HasProperties` -> property; read the value via `(prop)-[:rel {rel_type:'NominalValue'}]->(val:InlineNode)` then `val.wrappedValue`.
+- Quantities: `IfcRelDefinesByProperties` -> `IfcElementQuantity` -> `Quantities` -> q; read `q.LengthValue`, `q.AreaValue`, `q.VolumeValue`, `q.CountValue`.
+- Types: `IfcRelDefinesByType` (`RelatedObjects` -> element, `RelatingType` -> type).
+- Materials: `IfcRelAssociatesMaterial` (`RelatedObjects` -> element, `RelatingMaterial` -> material).
+- Space boundaries: `IfcRelSpaceBoundary` (`RelatingSpace` -> space, `RelatedBuildingElement` -> element).
+
+Cypher tips:
+- `coalesce(n.Name, '')` since Name can be null; `OPTIONAL MATCH` when a property/relationship may be absent.
+- IFC wrapped types (IfcLabel, IfcBoolean, IfcReal, ...) are `InlineNode` with `wrappedValue`, linked via `:rel`. `IfcProperty`/`IfcPhysicalQuantity`/`IfcNamedUnit` subtypes are `SecondaryNode`, not `PrimaryNode` -- omit the label or use `SecondaryNode` when matching them.
+- Key relationship `EntityType`s: `IfcRelAggregates`, `IfcRelContainedInSpatialStructure`, `IfcRelDefinesByProperties`, `IfcRelDefinesByType`, `IfcRelAssociatesMaterial`, `IfcRelSpaceBoundary`, `IfcRelVoidsElement`, `IfcRelFillsElement`, `IfcRelConnectsPathElements`, `IfcRelConnectsPorts`, `IfcRelAssignsToGroup`.
+- MEP subtyping: in IFC2x3 specific terminals are often `IfcFlowTerminal`; their specific category is in the type definition's `EntityType` (via `IfcRelDefinesByType`). Pipes may be `IfcFlowSegment` rather than `IfcPipeSegment`.
+
+Unit handling: `MATCH (p:PrimaryNode {EntityType:'IfcProject'})-[:rel*2..4]->(u) WHERE u.EntityType IN ['IfcSIUnit','IfcConversionBasedUnit'] RETURN u.EntityType, u.UnitType, u.Prefix, u.Name`."""
+
+
+@dataclass(frozen=True)
+class Frame:
+    """What the prompts say about the graph outside the schema block."""
+    role: str
+    guidelines: str          # follows the schema block, with its own leading blank line
+    zero_rows_check: str     # what the agent re-checks when a query returns nothing
+
+
+FRAMES = {
+    "typed": Frame(ROLE, "\n\n" + QUERY_GUIDELINES,
+                   "the listed relationship patterns and the Known Values"),
+    "generic": Frame(GENERIC_ROLE, "", "the query recipes and the entity types listed above"),
+}
 
 QUALITY_CRITERIA = """## RESPONSE QUALITY CRITERIA
 
@@ -140,9 +203,7 @@ handed to a separate writer who composes the final answer from it, so return eve
 the answer needs -- including the identifying properties (names, numbers) and units-bearing
 values needed to cite sources.
 
-{schema}
-
-{guidelines}
+{schema}{guidelines}
 
 {criteria}
 ## OUTPUT FORMAT
@@ -181,13 +242,11 @@ AGENT_SYSTEM = """{role} You work iteratively: you can run Cypher queries to exp
 
 Each query runs read-only with a {timeout:.0f} s timeout; you see at most {max_rows} rows of its result plus the total row count. You have at most {max_steps} steps.
 
-{schema}
-
-{guidelines}
+{schema}{guidelines}
 
 ## EXPLORATION APPROACH
 - Thoroughly explore the graph before answering: check all relevant labels, properties and relationships as needed for the question.
-- When a query returns 0 rows, the pattern or value is probably wrong: check the listed relationship patterns and the Known Values before concluding the information is missing.
+- When a query returns 0 rows, the pattern or value is probably wrong: check {zero_rows_check} before concluding the information is missing.
 - Pay careful attention to the specific element types, properties, and scope requested in the question.
 
 {criteria}{addendum}
@@ -216,10 +275,17 @@ def answer_addendum(variant: str) -> str:
     return "" if variant == "hellin" else "\n" + ANSWER_ADDENDUM
 
 
-def static_generator_messages(question: str, schema: str):
+def frame_of(name: str) -> Frame:
+    if name not in FRAMES:
+        raise ValueError(f"graph frame must be one of {sorted(FRAMES)}: {name!r}")
+    return FRAMES[name]
+
+
+def static_generator_messages(question: str, schema: str, frame: str = "typed"):
+    f = frame_of(frame)
     return [
         {"role": "system", "content": render(
-            STATIC_GENERATOR_SYSTEM, role=ROLE, schema=schema, guidelines=QUERY_GUIDELINES,
+            STATIC_GENERATOR_SYSTEM, role=f.role, schema=schema, guidelines=f.guidelines,
             criteria=QUALITY_CRITERIA, json_rules=JSON_RULES)},
         {"role": "user", "content": render(STATIC_GENERATOR_USER, question=question)},
     ]
@@ -236,10 +302,13 @@ def synthesizer_messages(question: str, cypher: str, result: str, variant: str =
 
 
 def agent_messages(question: str, schema: str, previous: str, *,
-                   max_steps: int, max_rows: int, timeout: float, variant: str = "hellin"):
+                   max_steps: int, max_rows: int, timeout: float, variant: str = "hellin",
+                   frame: str = "typed"):
+    f = frame_of(frame)
     return [
         {"role": "system", "content": render(
-            AGENT_SYSTEM, role=ROLE, schema=schema, guidelines=QUERY_GUIDELINES,
+            AGENT_SYSTEM, role=f.role, schema=schema, guidelines=f.guidelines,
+            zero_rows_check=f.zero_rows_check,
             criteria=QUALITY_CRITERIA, addendum=answer_addendum(variant), json_rules=JSON_RULES,
             max_steps=max_steps, max_rows=max_rows, timeout=timeout)},
         {"role": "user", "content": render(AGENT_USER, question=question, previous=previous)},

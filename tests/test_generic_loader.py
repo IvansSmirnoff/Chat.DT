@@ -1,4 +1,4 @@
-"""Rung 0: the generic (ECPPM) instance graph -- conversion and writes.
+"""Rung 0: the generic (ECPPM) instance graph -- conversion, writes, prompt context.
 
 Conversion runs on a tiny in-memory IFC, writes against a recording fake
 driver, so no Neo4j is needed. The live test at the bottom loads the tiny model
@@ -17,6 +17,8 @@ pytest.importorskip("ifcopenshell")
 import ifcopenshell  # noqa: E402
 import ifcopenshell.guid  # noqa: E402
 
+from src.agent import prompts  # noqa: E402
+from src.agent.context import GenericContext, collect_entity_types  # noqa: E402
 from src.etl import generic_loader as gl  # noqa: E402
 from src.etl import graph_cache as gc  # noqa: E402
 
@@ -182,6 +184,46 @@ def test_load_writes_their_statements_in_batches(monkeypatch):
 def test_load_refuses_a_graph_with_missing_edges(monkeypatch):
     with pytest.raises(RuntimeError, match="short"):
         _load(monkeypatch, short=1)
+
+
+# -----------------------------------------------------------------------------
+# Prompt context and frame
+# -----------------------------------------------------------------------------
+
+def test_generic_schema_prompt_is_theirs_plus_live_entity_types():
+    ctx = GenericContext(entity_types={"PrimaryNode": {"IfcSpace": 269, "IfcDoor": 254},
+                                       "InlineNode": {"IfcLabel": 3}})
+    text = ctx.schema_prompt()
+    assert text.startswith(prompts.GENERIC_SCHEMA)
+    assert "- `PrimaryNode` (523): IfcSpace 269, IfcDoor 254" in text
+    assert "- `ConnectionNode` (0): -" in text and "- `InlineNode` (3): IfcLabel 3" in text
+
+
+def test_collect_entity_types_groups_by_instance_label():
+    rows = [{"label": "PrimaryNode", "type": "IfcSpace", "c": 2},
+            {"label": "SecondaryNode", "type": "IfcCartesianPoint", "c": 5},
+            {"label": None, "type": "x", "c": 1}]
+    session = _Session()
+    session.run = lambda query, **params: rows
+    out = collect_entity_types(SimpleNamespace(session=lambda: session))
+    assert out["PrimaryNode"] == {"IfcSpace": 2} and out["SecondaryNode"] == {"IfcCartesianPoint": 5}
+    assert out["ConnectionNode"] == {} and out["InlineNode"] == {}
+
+
+def test_generic_frame_drops_what_is_false_of_the_instance_graph():
+    gen = prompts.static_generator_messages("Q?", "SCHEMA", frame="generic")[0]["content"]
+    agent = prompts.agent_messages("Q?", "SCHEMA", "", max_steps=25, max_rows=50, timeout=10.0,
+                                   frame="generic")[0]["content"]
+    for text in (gen, agent):
+        assert text.startswith(prompts.GENERIC_ROLE)
+        assert "every supertype" not in text and "Query Guidelines" not in text
+        assert "SCHEMA\n\n## " in text
+    assert "Known Values" not in agent and "the query recipes and the entity types" in agent
+    typed = prompts.agent_messages("Q?", "SCHEMA", "", max_steps=25, max_rows=50, timeout=10.0)
+    assert "SCHEMA\n\n## Query Guidelines" in typed[0]["content"]
+    assert "relationship patterns and the Known Values" in typed[0]["content"]
+    with pytest.raises(ValueError):
+        prompts.static_generator_messages("Q?", "SCHEMA", frame="other")
 
 
 # -----------------------------------------------------------------------------
