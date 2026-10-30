@@ -34,7 +34,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -46,6 +45,7 @@ from neo4j import GraphDatabase, Query
 from src.config import get_settings
 from src.etl.graph_cache import fingerprint, graph_summary, read_header, restore_graph
 from src.etl.manifest import cache_path, load_manifest, model_entry
+from src.eval.answer_key import same
 
 DEFAULT_FILE = Path("data/ifcbench/authored/dental_clinic__arc.jsonl")
 STATES = ("base", "topology")
@@ -59,38 +59,9 @@ logger = logging.getLogger("verify_authored")
 
 
 # -----------------------------------------------------------------------------
-# Comparison
+# Comparison (``same`` lives in src/eval/answer_key.py, which scores run answers
+# against the same answer keys)
 # -----------------------------------------------------------------------------
-
-def _sort_key(value: Any) -> str:
-    """A stable key for set comparison; floats rounded so near-equal values sort together."""
-    def norm(v: Any) -> Any:
-        if isinstance(v, float):
-            return round(v, 3)
-        if isinstance(v, list):
-            return [norm(x) for x in v]
-        if isinstance(v, dict):
-            return {k: norm(x) for k, x in v.items()}
-        return v
-    return json.dumps(norm(value), sort_keys=True)
-
-
-def same(got: Any, want: Any, tol: float, ordered: bool = True) -> bool:
-    """Structural equality; numbers within ``tol`` (relative), lists as sets unless ``ordered``."""
-    if isinstance(want, bool) or isinstance(got, bool):
-        return got is want
-    if isinstance(want, (int, float)) and isinstance(got, (int, float)):
-        return math.isclose(got, want, rel_tol=tol, abs_tol=1e-9)
-    if isinstance(want, list) and isinstance(got, list):
-        if len(got) != len(want):
-            return False
-        if not ordered:
-            got, want = sorted(got, key=_sort_key), sorted(want, key=_sort_key)
-        return all(same(g, w, tol) for g, w in zip(got, want))
-    if isinstance(want, dict) and isinstance(got, dict):
-        return got.keys() == want.keys() and all(same(got[k], want[k], tol) for k in want)
-    return got == want
-
 
 def compare(rows: List[Dict[str, Any]], answer: Dict[str, Any], tol: float) -> Tuple[bool, str]:
     if len(rows) != 1:
