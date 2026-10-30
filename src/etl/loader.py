@@ -519,10 +519,20 @@ class IFCToNeo4jLoader:
         """
         logger.warning("Wiping entire Neo4j database...")
 
+        # Relationships first, then nodes: a DETACH DELETE batch of nodes also
+        # deletes every edge of each node in the same transaction, and the
+        # generic instance graph has hubs (owner history, shared placements)
+        # with tens of thousands of edges, which exhausts the transaction
+        # memory pool on a small heap.
         with self.driver.session() as session:
             session.run("""
+                MATCH ()-[r]->()
+                CALL { WITH r DELETE r }
+                IN TRANSACTIONS OF 10000 ROWS
+            """).consume()
+            session.run("""
                 MATCH (n)
-                CALL { WITH n DETACH DELETE n }
+                CALL { WITH n DELETE n }
                 IN TRANSACTIONS OF 10000 ROWS
             """).consume()
 
