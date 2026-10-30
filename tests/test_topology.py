@@ -1,11 +1,13 @@
 """Topology enrichment: geometry rules, the clinic checks, the prompt notes, the live round trip.
 
 Three layers:
-* pure rules on synthetic rooms (shapely only);
+* pure rules on synthetic rooms (shapely only), the geometry fallback for
+  models without space boundaries included;
 * the plan's train-data checks on the dental clinic IFC files (skipped where the
   files or ifcopenshell are missing): Q28 connected = {1BC2}, Q29 adjacent =
   {1B04, 1B05, 1B09, 1BC2}; open passages, door sides and doors without
-  boundaries;
+  boundaries; the clinic recomputed from geometry alone; two other IFC-Bench
+  models (second-level virtual boundaries, spaces without a storey);
 * the live apply/remove round trip, which wipes the database and so runs only
   with ``NL2C_ALLOW_DB_WIPE=1``; it restores the graph it found.
 """
@@ -209,6 +211,153 @@ def test_open_plan_rooms_touching_without_a_wall_are_adjacent_once():
     assert [(p["a"], p["b"], p["method"]) for p in out] == [("A", "B", "wall")]
 
 
+# -----------------------------------------------------------------------------
+# Geometry fallback (rooms and doors without space boundaries)
+# -----------------------------------------------------------------------------
+
+# A 0.3 m wall x = 4..4.3 between A and B, whose footprints stop at its faces;
+# the door in it is only 0.1 m deep (x = 4.1..4.2), so neither room touches it.
+THICK = {"A": box(0, 0, 4, 3), "B": box(4.3, 0, 8, 3)}
+THICK_WALL = box(4.0, -2, 4.3, 5)
+THIN_DOOR = box(4.1, 1.0, 4.2, 2.0)
+
+
+def test_the_door_passage_reaches_across_its_host_wall():
+    axis = tp.door_axis(THIN_DOOR, (0.0, 1.0))
+    passage, thickness = tp.door_passage(THIN_DOOR, axis, THICK_WALL)
+    assert thickness == pytest.approx(0.3)
+    assert passage.bounds == pytest.approx((4.0, 1.0, 4.3, 2.0))
+    assert all(THICK[r].distance(passage) <= tp.DOOR_TOUCH_M for r in THICK)
+    assert all(THICK[r].distance(THIN_DOOR) > tp.DOOR_TOUCH_M for r in THICK)
+    # No host, or a "wall" thicker than any wall (the strip caught something else): the door alone.
+    assert tp.door_passage(THIN_DOOR, axis, None) == (THIN_DOOR, None)
+    assert tp.door_passage(THIN_DOOR, axis, box(3.0, -2, 5.5, 5)) == (THIN_DOOR, None)
+    # A door deeper than its wall is its own passage (the clinic: 0.174 m doors, 0.124 m walls).
+    deep = box(3.95, 1.0, 4.35, 2.0)
+    assert tp.door_passage(deep, tp.door_axis(deep, (0.0, 1.0)), THICK_WALL) == (deep, pytest.approx(0.3))
+
+
+def test_the_side_test_finds_rooms_at_the_wall_faces_through_the_passage():
+    axis = tp.door_axis(THIN_DOOR, (0.0, 1.0))
+    passage, _ = tp.door_passage(THIN_DOOR, axis, THICK_WALL)
+    sides = tp.room_sides(THICK, tp.side_boxes(passage, axis))
+    assert sides == {"A": {1}, "B": {-1}}
+    pairs, exterior, _ = tp.door_space_pairs({"d": set()}, {}, THICK, {"d": sides}, use_geometry=True)
+    assert pairs == [("A", "B", "d", "geometry")] and exterior == {"d": False}
+
+
+def test_an_open_leaf_does_not_turn_the_door_across_its_wall():
+    # A leaf drawn open makes the footprint deeper (1.1) than wide (0.9) along the wall.
+    open_leaf = box(4.1, 1.0, 4.2, 1.9).union(box(4.2, 1.0, 5.2, 1.05))
+    axis = (0.0, 1.0)
+    assert tp.door_axis(open_leaf, axis) == pytest.approx((-1.0, 0.0))          # the old swap
+    assert tp.door_axis(open_leaf, axis, THICK_WALL) == pytest.approx(axis)    # the wall runs along y
+
+
+def test_a_room_touching_only_the_jamb_is_on_neither_side():
+    door = box(4.0, 1.0, 4.12, 2.0)
+    rooms = {"A": box(0, 0, 4, 3), "B": box(4.12, 1.0, 8, 3),
+             "corridor": box(4.12, -3, 8, 0.98)}       # runs past the door's end
+    sides = tp.room_sides(rooms, tp.door_side_boxes(door, (0.0, 1.0)))
+    assert sides == {"A": {1}, "B": {-1}, "corridor": set()}
+    # The rule of rev 2 (no box share) put it beside B; it still decides the
+    # sides of rooms the boundaries record on a door.
+    assert tp.room_sides(rooms, tp.door_side_boxes(door, (0.0, 1.0)), box_share=0.0)["corridor"] == {-1}
+
+
+def test_a_space_around_a_door_is_joined_to_nothing_and_keeps_it_inside():
+    twins = {"door": {"bath": {1, -1}, "hall": {1, -1}}}           # exported with the same geometry
+    zone = {"door": {"gross area": {1, -1}, "office": {1}}}        # a zone over every room (hitos)
+    through = {"door": {"gross area": {1, -1}, "office": {1}, "corridor": {-1}}}
+    spaces = {"door": set()}
+    pairs, exterior, stats = tp.door_space_pairs(spaces, {}, {}, twins, use_geometry=True)
+    assert pairs == [] and exterior == {"door": False} and stats["unbounded_inside_one_room"] == 1
+    pairs, exterior, stats = tp.door_space_pairs(spaces, {}, {}, zone, use_geometry=True)
+    assert pairs == [] and exterior == {"door": False} and stats["unbounded_into_surrounding_space"] == 1
+    pairs, _, _ = tp.door_space_pairs(spaces, {}, {}, through, use_geometry=True)
+    assert pairs == [("corridor", "office", "door", "geometry")]
+
+
+def _rooms(footprints, z=(0.0, 3.0)):
+    return {k: "s1" for k in footprints}, {k: z for k in footprints}
+
+
+def test_geometry_adjacency_needs_a_wall_between_or_touching_footprints():
+    rooms = {"A": box(0, 0, 4, 3), "B": box(4.12, 0, 8, 3),        # across wall w1
+             "C": box(0, 3.0, 4, 6),                               # touches A, nothing between: open
+             "D": box(8.3, 0, 12, 3),                              # 0.3 m from B, nothing between
+             "E": box(0, -4, 4, -1)}                               # below A, too far
+    storey, z = _rooms(rooms)
+    walls = [("w1", box(4.0, -1, 4.12, 4), 0.0, 3.0)]
+    out, passages, stats = tp.geometric_pairs(rooms, storey, z, walls)
+    got = {(p["a"], p["b"]): (p["method"], p["via_gid"], p["source"]) for p in out}
+    assert got == {("A", "B"): ("wall", "w1", "geometry"), ("A", "C"): ("open", None, "geometry")}
+    assert passages == [("A", "C")] and stats["nothing_between"] == 1
+    # The boundaries decide pairs of two bounded rooms: only the others are looked at.
+    out, _, _ = tp.geometric_pairs(rooms, storey, z, walls, include=lambda a, b: "C" in (a, b))
+    assert [(p["a"], p["b"]) for p in out] == [("A", "C")]
+
+
+def test_an_open_passage_is_blocked_by_a_wall_on_the_shared_edge_but_not_by_a_column():
+    rooms = {"A": box(0, 0, 4, 3), "B": box(4, 0, 8, 3)}           # footprints to the wall's centre line
+    storey, z = _rooms(rooms)
+    wall = [("w", box(3.94, 0, 4.06, 3), 0.0, 3.0)]
+    out, passages, _ = tp.geometric_pairs(rooms, storey, z, wall)
+    assert passages == [] and [(p["method"], p["via_gid"]) for p in out] == [("wall", "w")]
+    column = [("c", box(3.8, -0.2, 4.2, 0.2), 0.0, 3.0)]
+    out, passages, _ = tp.geometric_pairs(rooms, storey, z, column)
+    assert passages == [("A", "B")] and out[0]["method"] == "open"
+    # A low parapet, or a wall of the floor below, does not separate them either.
+    for z0, z1 in ((0.0, 1.1), (-3.0, 0.2)):
+        _, passages, _ = tp.geometric_pairs(rooms, storey, z, [("w", wall[0][1], z0, z1)])
+        assert passages == [("A", "B")]
+
+
+def test_a_walkable_unfilled_opening_cuts_its_wall():
+    rooms = {"A": box(0, 0, 4, 3), "B": box(4, 0, 8, 3)}
+    storey, z = _rooms(rooms)
+    wall = [("w", box(3.94, 0, 4.06, 3), 0.0, 3.0)]
+    cased = [("o", box(3.93, 1.0, 4.07, 2.0), 0.0, 2.1)]         # floor to 2.1 m: a cased opening
+    hatch = [("o", box(3.93, 1.0, 4.07, 2.0), 0.9, 2.1)]         # a serving hatch
+    _, passages, _ = tp.geometric_pairs(rooms, storey, z, wall, openings=cased)
+    assert passages == [("A", "B")]
+    _, passages, _ = tp.geometric_pairs(rooms, storey, z, wall, openings=hatch)
+    assert passages == []
+
+
+def test_overlapping_spaces_are_not_neighbours_and_no_walls_means_no_geometry_pairs():
+    rooms = {"room": box(0, 0, 4, 3), "room-M": box(0, 0, 4, 3), "next": box(4, 0, 8, 3)}
+    storey, z = _rooms(rooms)
+    out, _, stats = tp.geometric_pairs(rooms, storey, z, [("w", box(20, 20, 21, 21), 0.0, 3.0)])
+    assert stats["overlapping"] == 1 and {(p["a"], p["b"]) for p in out} == {("next", "room"), ("next", "room-M")}
+    # An MEP model with spaces but no walls cannot tell a wall from an opening.
+    assert tp.geometric_pairs(rooms, storey, z, []) == ([], [], {"no_wall_geometry": True})
+    assert tp.overlapping(box(0, 0, 4, 3), box(3.9, 0, 8, 3)) is False
+
+
+def test_spaces_without_a_storey_go_on_the_storey_at_their_floor_or_a_level_of_their_own():
+    floor_z = {"a": 11.1, "b": 0.0, "c": 0.02, "d": 3.7, "e": 11.12}
+    storey_of = {"a": "3rd", "b": None, "c": None, "d": None, "e": None}
+    out, stats = tp.assign_levels(floor_z, storey_of, {"3rd": 11.1, "4th": 14.8})
+    assert out == {"a": "3rd", "b": "level@0.00", "c": "level@0.00", "d": "level@3.70", "e": "3rd"}
+    assert stats == {"storey_from_elevation": 1, "level_from_floor_height": 3}
+
+
+def test_geometry_edges_carry_their_source():
+    geom = {g: ElementGeometry(f, 0.0, 3.0) for g, f in ROOMS.items()}
+    topo = tp.assemble([("A", "B", "d1", "geometry")], {"d1": "Door 1"},
+                       [{"a": "A", "b": "C", "method": "wall", "via_gid": "w", "gap_m": 0.12,
+                         "shared_len_m": 4.0, "source": "geometry"}],
+                       [], geom, {"d1": False}, {}, [("A", "C")], [("B", "C")])
+    props = {(e.rel_type, e.source, e.target): e.props for e in topo.edges}
+    assert props[("CONNECTED_VIA", "A", "B")]["door_source"] == "geometry"
+    assert props[("ADJACENT_TO", "C", "A")]["source"] == "geometry"
+    assert props[("OPEN_TO", "A", "C")]["source"] == "virtual_boundary"
+    assert props[("OPEN_TO", "C", "B")]["source"] == "geometry"
+    assert tp._edges_by_source(topo.edges) == {"ADJACENT_TO/geometry/wall": 1, "CONNECTED_VIA/geometry": 1,
+                                               "OPEN_TO/geometry": 1, "OPEN_TO/virtual_boundary": 1}
+
+
 def test_vertical_access_serves_storeys_within_the_height_range():
     pairs = tp.vertical_access({"stair": (-0.01, 5.67), "ramp": (-1.0, 0.0)},
                                {"footing": -1.0, "first": 0.0, "second": 4.57, "roof": 9.25})
@@ -314,8 +463,14 @@ def test_clinic_doors_walls_and_stairs(clinic):
                           "doors_bounding_2": 222, "doors_bounding_3+": 4,
                           "multi_room_doors_side_test": 4,
                           "unbounded_exterior": 6, "unbounded_inside_one_room": 12}
-    # The side test reproduces every door that has boundaries before it is used.
-    assert s["door_side_check"] == {"checked": 236, "agree": 236, "disagree": [], "trusted": True}
+    # The side test reproduces the doors that have boundaries before it is used.
+    # The one it does not: corridor 2CC3 is recorded on the 2C12 door but only
+    # touches its jamb (0.2% of the door's width); the leaf opens into 2CC4.
+    assert s["door_side_check"] == {"checked": 236, "agree": 235, "disagree": ["35QeWibpT4DfyH3NIf2nTY"],
+                                    "trusted": True, "geometry_used": True}
+    assert s["spaces_with_boundaries"] == 269 and s["edges_by_source"] == {
+        "ADJACENT_TO/boundary/open": 56, "ADJACENT_TO/boundary/wall": 591,
+        "CONNECTED_VIA/boundary": 230, "OPEN_TO/virtual_boundary": 56}
     # The reportable over-return of "shares a wall" as adjacency.
     assert s["adjacency"]["wall_pairs_same_storey"] == 1037
     assert s["adjacency"]["wall_pairs_over_return"] == pytest.approx(0.375, abs=0.01)
@@ -361,6 +516,63 @@ def test_clinic_doors_without_boundaries(clinic):
     assert geometry_edges == []        # cubicles and the storefront in 1DC1 sit inside one room
     main_entrance = {"3o5ntlA212uQCF0q6eQsZI", "0otfaO0qPDAhynjJ6DnLXx"}   # 1AC1, exported twice
     assert main_entrance <= exterior
+
+
+def _pairs(topo, rel, with_door=False):
+    return {((e.props["door_gid"],) if with_door else ()) + (e.source, e.target)
+            for e in topo.edges if e.rel_type == rel and e.source < e.target}
+
+
+@pytest.fixture(scope="module")
+def clinic_geometry_only(data_dir):
+    pytest.importorskip("ifcopenshell")
+    path = data_dir / "ifcbench/raw/projects/dental_clinic/arc.ifc"
+    if not path.is_file():
+        pytest.skip(f"clinic IFC not at {path}")
+    return tp.compute_topology(path, use_boundaries=False)
+
+
+def test_clinic_from_geometry_alone_reproduces_its_boundaries(clinic, clinic_geometry_only):
+    """The fallback, validated where the truth is known (rules not tuned on question answers)."""
+    ref, geo = clinic[0], clinic_geometry_only
+    assert geo.stats["spaces_with_boundaries"] == 0
+    # Door links: all 229 geometric ones are boundary links; the one missed is
+    # 2C12-2CC3, the corridor touching only the jamb of a three-room door.
+    ref_doors, geo_doors = _pairs(ref, "CONNECTED_VIA", True), _pairs(geo, "CONNECTED_VIA", True)
+    assert geo_doors < ref_doors and len(ref_doors - geo_doors) == 1
+    # Open passages: the 56 virtual-boundary pairs, the bays through unfilled openings included.
+    assert _pairs(geo, "OPEN_TO") == _pairs(ref, "OPEN_TO")
+    assert {e.props["source"] for e in geo.edges if e.rel_type == "OPEN_TO"} == {"geometry"}
+    # Adjacency: every boundary pair, plus 28 across double walls (each wall bounding one room).
+    assert _pairs(ref, "ADJACENT_TO") < _pairs(geo, "ADJACENT_TO")
+    assert len(_pairs(geo, "ADJACENT_TO") - _pairs(ref, "ADJACENT_TO")) == 28
+    exterior = {g for g, p in ref.node_props.items() if p.get("is_exterior_door")}
+    assert {g for g, p in geo.node_props.items() if p.get("is_exterior_door")} == exterior
+
+
+def test_second_level_virtual_boundaries_are_read(data_dir):
+    """fzk_house records its open plan as bounded planes (IFC4), unreadable before rev 3."""
+    pytest.importorskip("ifcopenshell")
+    path = data_dir / "ifcbench/raw/projects/fzk_house/arc.ifc"
+    if not path.is_file():
+        pytest.skip(f"IFC not at {path}")
+    import ifcopenshell
+
+    name = {s.GlobalId: s.LongName for s in ifcopenshell.open(str(path)).by_type("IfcSpace")}
+    topo = tp.compute_topology(path)
+    assert {frozenset((name[a], name[b])) for a, b in _pairs(topo, "OPEN_TO")} == {
+        frozenset(p) for p in (("Wohnen", "Küche"), ("Wohnen", "Flur"), ("Küche", "Flur"))}
+
+
+def test_spaces_under_the_site_get_a_level_from_their_floor(data_dir):
+    pytest.importorskip("ifcopenshell")
+    path = data_dir / "ifcbench/raw/projects/fantasy_office_building_2/arc.ifc"
+    if not path.is_file():
+        pytest.skip(f"IFC not at {path}")
+    topo = tp.compute_topology(path)
+    assert topo.stats["spaces_without_storey_in_ifc"] == 22 and topo.stats["spaces_without_storey"] == 0
+    assert topo.stats["storey_levels"] == {"level_from_floor_height": 22}
+    assert topo.stats["edges_by_source"].get("CONNECTED_VIA/geometry", 0) > 0
 
 
 def test_structural_model_has_stairs_but_no_rooms(data_dir):

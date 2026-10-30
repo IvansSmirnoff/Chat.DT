@@ -14,6 +14,9 @@ Usage
 -----
     # what would be written, from the IFC alone (no Neo4j)
     python scripts/enrich_topology.py --dry-run --model-id dental_clinic__arc
+    # the same from geometry alone, as if the IFC had no space boundaries
+    # (how the geometry fallback is validated on the models that have them)
+    python scripts/enrich_topology.py --dry-run --ignore-boundaries --model-id dental_clinic__arc
     # enrich the loaded graph (it must be that model's base graph) and export the snapshot
     python scripts/enrich_topology.py --apply --model-id dental_clinic__arc --export
     # back to base
@@ -54,6 +57,8 @@ def main(argv=None) -> int:
     p.add_argument("--export", action="store_true",
                    help="After --apply, export the topology snapshot (needs --model-id)")
     p.add_argument("--report", type=Path, help="Write the computation stats as JSON")
+    p.add_argument("--ignore-boundaries", action="store_true",
+                   help="With --dry-run: compute from geometry alone, as if the IFC had no space boundaries")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -69,9 +74,11 @@ def main(argv=None) -> int:
         p.error("--dry-run/--apply need --model-id or --ifc")
     if args.export and entry is None:
         p.error("--export needs --model-id")
+    if args.ignore_boundaries and not args.dry_run:
+        p.error("--ignore-boundaries is a validation mode: --dry-run only")
 
     if args.dry_run:
-        topo = compute_topology(ifc)
+        topo = compute_topology(ifc, use_boundaries=not args.ignore_boundaries)
         print(json.dumps(topo.stats, indent=2))
         if args.report:
             args.report.write_text(json.dumps(topo.stats, indent=2))

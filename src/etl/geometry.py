@@ -9,13 +9,16 @@ Nothing else from the shape is kept.
 Shapes come from ``ifcopenshell.geom`` in world coordinates, which it returns in
 metres whatever the file's length unit. The ``create_shape`` result must stay
 referenced while its buffers are read: ``create_shape(...).geometry`` on a
-temporary dangles them (garbage face indices).
+temporary dangles them (garbage face indices). Many elements at once go
+through the library's multithreaded iterator (``iterate_geometry``), which
+gives the same meshes several times faster.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from shapely.geometry import Polygon
 from shapely.geometry.base import BaseGeometry
@@ -68,12 +71,48 @@ def merge(parts: Iterable[Optional[ElementGeometry]]) -> Optional[ElementGeometr
                            min(p.z_min for p in parts), max(p.z_max for p in parts))
 
 
-def shape_settings():
+def shape_settings(solid: bool = False):
+    """World-coordinate shapes; ``solid``: without opening subtractions.
+
+    Walls are read solid: their footprint then runs through the doors they
+    host, which is what measuring a wall's thickness at a door needs (and the
+    boolean subtraction is the slow part of meshing a wall).
+    """
     import ifcopenshell.geom
 
     settings = ifcopenshell.geom.settings()
     settings.set(settings.USE_WORLD_COORDS, True)
+    if solid:
+        settings.set(settings.DISABLE_OPENING_SUBTRACTIONS, True)
     return settings
+
+
+def _mesh(geom) -> Optional[ElementGeometry]:
+    v, f = list(geom.verts), list(geom.faces)
+    points: List[Point3] = [(v[i], v[i + 1], v[i + 2]) for i in range(0, len(v), 3)]
+    return mesh_geometry(points, f)
+
+
+def iterate_geometry(model, elements: Sequence, settings,
+                     threads: Optional[int] = None) -> Dict[str, ElementGeometry]:
+    """Footprint and height range of many elements by GlobalId; elements without a shape are left out."""
+    import ifcopenshell.geom
+
+    out: Dict[str, ElementGeometry] = {}
+    elements = [e for e in elements if getattr(e, "Representation", None) is not None]
+    if not elements:
+        return out
+    iterator = ifcopenshell.geom.iterator(settings, model, threads or os.cpu_count() or 1, include=elements)
+    if not iterator.initialize():
+        return out
+    while True:
+        shape = iterator.get()
+        g = _mesh(shape.geometry)          # `shape` stays referenced while buffers are read
+        if g is not None:
+            out[shape.guid] = g
+        if not iterator.next():
+            break
+    return out
 
 
 def element_geometry(element, settings, include_parts: bool = False) -> Optional[ElementGeometry]:
@@ -91,10 +130,7 @@ def element_geometry(element, settings, include_parts: bool = False) -> Optional
         except RuntimeError:
             shape = None
         if shape is not None:
-            geom = shape.geometry          # `shape` stays referenced while buffers are read
-            v, f = list(geom.verts), list(geom.faces)
-            points: List[Point3] = [(v[i], v[i + 1], v[i + 2]) for i in range(0, len(v), 3)]
-            own = mesh_geometry(points, f)
+            own = _mesh(shape.geometry)    # `shape` stays referenced while buffers are read
     if not include_parts:
         return own
     parts = [p for rel in (getattr(element, "IsDecomposedBy", None) or []) for p in rel.RelatedObjects]

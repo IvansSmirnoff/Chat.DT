@@ -111,15 +111,16 @@ DERIVED_EDGE_NOTES = {
         "both directions: use DISTINCT or an undirected pattern when counting"
     ),
     "OPEN_TO": (
-        "spaces joined by a doorless opening, with no wall or door between them. Stored in both "
-        "directions. Walkable connections between spaces are CONNECTED_VIA or OPEN_TO"
+        "spaces joined by a doorless opening, with no wall or door between them (prop source: "
+        "'virtual_boundary' or 'geometry'). Stored in both directions. Walkable connections "
+        "between spaces are CONNECTED_VIA or OPEN_TO"
     ),
     "ADJACENT_TO": (
-        "rooms that physically touch on the same storey: across a shared wall "
+        "rooms that physically touch on the same storey: across a wall "
         "(method='wall', via_gid = that wall) or with nothing between them (method='open', "
-        "every OPEN_TO pair); props gap_m, shared_len_m. Stored in both directions. Two rooms "
-        "bounded by the same element (BOUNDED_BY) are NOT necessarily adjacent: a corridor wall "
-        "bounds rooms metres apart"
+        "every OPEN_TO pair); props gap_m, shared_len_m, source ('boundary' or 'geometry'). "
+        "Stored in both directions. Two rooms bounded by the same element (BOUNDED_BY) are NOT "
+        "necessarily adjacent: a corridor wall bounds rooms metres apart"
     ),
     "VERTICAL_ACCESS": "stair, ramp or lift -> each storey it serves",
 }
@@ -134,8 +135,8 @@ DERIVED_PROPERTY_NOTES = {
         "quantities), which are the ones to report for an area question"
     ),
     "is_exterior_door": (
-        "on doors: true if the door leads outside (external boundary, or a room on one side only). "
-        "True for every such door -- entrances, service doors, emergency exits alike; "
-        "it does not say which one is the main entrance"
+        "on doors: true if the door leads outside (external boundary, the door's IsExternal "
+        "property, or a room on one side only). True for every such door -- entrances, service "
+        "doors, emergency exits alike; it does not say which one is the main entrance"
     ),
 }
