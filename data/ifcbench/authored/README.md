@@ -64,8 +64,10 @@ Every answer agreed on at least two independent routes before it went in:
 1. **Base graph** (`dental_clinic__arc.base` snapshot): `gold_cypher.base`.
 2. **Topology graph** (`dental_clinic__arc.topology` snapshot):
    `gold_cypher.topology`, which uses the enrichment edges (`CONNECTED_VIA`,
-   `ADJACENT_TO`, `VERTICAL_ACCESS`, `is_exterior_door`, `geo_*`) wherever they
-   apply.
+   `OPEN_TO`, `ADJACENT_TO`, `VERTICAL_ACCESS`, `is_exterior_door`, `geo_*`)
+   wherever they apply. Routes walk `CONNECTED_VIA|OPEN_TO` (topology rev 2;
+   rev 1 had no `OPEN_TO` and walked `CONNECTED_VIA` plus `ADJACENT_TO`
+   `method: 'open'`, which caught 23 of the 56 open passages).
 3. **IFC directly** (ifcopenshell + shapely, no Neo4j and no code from
    `src/etl`): door-to-room by door geometry (rooms whose footprint touches the
    door leaf, independent of `IfcRelSpaceBoundary`; it agrees for all 236
@@ -83,11 +85,18 @@ on routes 2 and 3. The `verification` field records the specifics.
 Pitfalls the questions avoid:
 
 * the 4 doors bounding three spaces (1A10/1A16/1AC4, 1A15/1AC2/1AS1,
-  1B14/1BC2/1BC3, 2C12/2CC3/2CC4), where `CONNECTED_VIA` keeps the two nearest
-  rooms and the base graph keeps all pairs;
+  1B14/1BC2/1BC3, 2C12/2CC3/2CC4), where the base graph keeps all three pairs
+  and `CONNECTED_VIA` the two across the door leaf (rev 1: the two rooms
+  nearest the door, which for 1A10 were 1A16/1AC4, cutting 1A10 off);
 * the 18 doors with no space boundary (8 toilet-cubicle partitions and 10
-  curtain-wall doors, including the main entrance in 1AC1 and the gates of the
-  mechanical yard 1F01);
+  curtain-wall doors: the main entrance in 1AC1, two interior storefront doors
+  inside 1DC1 and the two gates of the mechanical yard 1F01, each exported
+  twice). From rev 2 the enrichment places them by geometry: the 6 door nodes
+  of the entrance and the gates are `is_exterior_door`, the cubicle and
+  storefront doors have one room on both sides and join nothing. None of them
+  has a `BOUNDED_BY` edge, so a query reaches them only through the door node
+  (the IFC check above counted 1DC1 as an exit; it is not, and no answer
+  depends on it);
 * derived `CONTAINS` edges (no question uses `CONTAINS`);
 * adjacency close to the thresholds: every included neighbour shares at least
   0.6 m of edge, and every excluded room sharing a wall is either more than
