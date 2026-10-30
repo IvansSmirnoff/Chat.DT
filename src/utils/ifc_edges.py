@@ -128,7 +128,11 @@ DERIVED_EDGE_NOTES = {
 DERIVED_PROPERTY_NOTES = {
     "geo_cx, geo_cy": "plan centroid in metres (rooms, doors, windows, stairs, ramps)",
     "geo_z_min, geo_z_max": "height range in metres",
-    "geo_footprint_m2": "plan footprint area in m² (rooms: floor outline)",
+    "geo_footprint_m2": (
+        "area of the plan outline in m², computed from geometry to locate and compare "
+        "elements; it differs from the areas the model itself records (property sets, "
+        "quantities), which are the ones to report for an area question"
+    ),
     "is_exterior_door": (
         "on doors: true if the door leads outside (external boundary, or a room on one side only). "
         "True for every such door -- entrances, service doors, emergency exits alike; "
