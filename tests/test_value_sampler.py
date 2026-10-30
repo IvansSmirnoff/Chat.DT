@@ -14,6 +14,7 @@ import pytest
 from src.constraints.value_sampler import (
     EXCLUDE_PROPS,
     generate_few_shot_examples,
+    is_self_named,
     sample_value_enumerations,
 )
 from src.constraints.vocabulary_merger import (
@@ -209,6 +210,59 @@ def test_sample_skips_strict_properties():
     assert all("RETURN DISTINCT" not in q for q in driver.executed)
 
 
+@pytest.mark.parametrize(
+    "prop, value",
+    [
+        ("AccessibilityPerformance", "AccessibilityPerformance"),
+        ("Material", "material"),  # case-insensitive
+        ("Project_Name", "Project Name"),  # canonicalised like the key
+        ("FireRating", "Fire Rating"),  # separators ignored
+        ("PSet_Revit_Type_Other_Finish", "Finish"),  # pset-qualified key
+        ("Pset_WindowCommon_FireRating", "FireRating"),
+        ("ifc_type", "Type"),  # reserved-name prefix
+    ],
+)
+def test_self_named_placeholders_are_recognised(prop, value):
+    assert is_self_named(prop, value)
+
+
+@pytest.mark.parametrize(
+    "prop, value",
+    [
+        ("FireRating", "1 HR"),
+        ("Name", "First Floor"),
+        ("Up_text", "Up"),  # a prefix of the key is a real value, not its name
+        ("Material", "Materials"),
+        ("Area", 12.5),
+        ("Material", ""),
+    ],
+)
+def test_real_values_are_not_self_named(prop, value):
+    assert not is_self_named(prop, value)
+
+
+def test_sample_drops_self_named_placeholder_values():
+    """Revit writes an unset parameter as its own name. Never advertise that."""
+    vocab = _build_vocab({
+        "IfcFooting": {"Material": PropertyType.STRING},
+        "IfcDoor": {"AccessibilityPerformance": PropertyType.STRING},
+        "IfcFlowTerminal": {"AssetAccountingType": PropertyType.STRING},
+    })
+    driver = _FakeDriver(regex_responses=[
+        (lambda q: "n.`Material`" in q, [{"v": "Material"}, {"v": "Concrete"}]),
+        (lambda q: "n.`AccessibilityPerformance`" in q, [{"v": "AccessibilityPerformance"}]),
+        (lambda q: "n.`AssetAccountingType`" in q,
+         [{"v": "AssetAccountingType"}, {"v": "FIXED"}]),
+    ])
+
+    enums = sample_value_enumerations(driver, vocab)
+
+    assert enums == {
+        "IfcFooting.Material": ["Concrete"],
+        "IfcFlowTerminal.AssetAccountingType": ["FIXED"],
+    }
+
+
 def test_sample_handles_empty_graph_gracefully():
     vocab = _build_vocab({"IfcSpace": {"LongName": PropertyType.STRING}})
     driver = _FakeDriver(regex_responses=[(lambda q: True, [])])
@@ -387,6 +441,33 @@ def test_few_shots_drop_examples_that_fail_to_execute():
     examples = generate_few_shot_examples(driver, vocab, {}, n=5)
 
     assert examples == []
+
+
+def test_few_shots_never_filter_on_a_placeholder_value():
+    """The clinic prompt once showed ``WHERE n.AccessibilityPerformance =
+    'AccessibilityPerformance'``. Even an enumeration sampled before the filter
+    existed must not reach an example."""
+    vocab = _build_vocab({
+        "IfcWall": {
+            "AccessibilityPerformance": PropertyType.STRING,
+            "AssetAccountingType": PropertyType.STRING,
+        },
+    })
+    enumerations = {
+        "IfcWall.AccessibilityPerformance": ["AccessibilityPerformance"],
+        "IfcWall.AssetAccountingType": ["AssetAccountingType", "FIXED"],
+    }
+    regex_responses: List[tuple] = []
+    regex_responses += _label_responses({"IfcWall": 10})
+    regex_responses += _rel_responses([])
+    regex_responses.append((lambda q: True, []))
+
+    examples = generate_few_shot_examples(
+        _FakeDriver(regex_responses=regex_responses), vocab, enumerations, n=5
+    )
+
+    filters = [ex["cypher"] for ex in examples if "WHERE" in ex["cypher"]]
+    assert filters == ["MATCH (n:IfcWall) WHERE n.AssetAccountingType = 'FIXED' RETURN n"]
 
 
 def test_few_shots_respect_n_cap():

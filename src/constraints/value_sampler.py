@@ -63,6 +63,47 @@ MAX_PROPS_PER_ENTITY = 12
 # =============================================================================
 
 
+def _fold(text: str) -> str:
+    """Lower-case alphanumerics only: a name with its separators and case gone."""
+    return "".join(c for c in text.lower() if c.isalnum())
+
+
+def is_self_named(prop_name: str, value: Any) -> bool:
+    """True if ``value`` is just the name of its own property: a placeholder.
+
+    Revit exports an unset type parameter as its own name, so the graph carries
+    ``AccessibilityPerformance = 'AccessibilityPerformance'``, ``Material =
+    'Material'``, ``Project_Name = 'Project Name'`` on every element of a label.
+    Advertised as a known value, or used in a few-shot, it teaches the model a
+    filter that only matches the junk.
+
+    The value is compared the way property keys are canonicalised (non-alphanumerics
+    are separators), ignoring case and separators, against the key and against
+    every ``_``-delimited suffix of it: a pset-qualified key
+    ``<PropertySet>_<Property>`` holds the same placeholder as the bare one
+    (``PSet_Revit_Type_Other_Finish = 'Finish'``), and so does a key whose
+    spelling differs only in separators (``FireRating = 'Fire Rating'``).
+    """
+    if not isinstance(value, str):
+        return False
+    folded = _fold(value)
+    if not folded:
+        return False
+    parts = [_fold(p) for p in prop_name.split("_")]
+    return any("".join(parts[i:]) == folded for i in range(len(parts)))
+
+
+def _drop_self_named(enumerations: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    """``enumerations`` without placeholder values, and without keys left empty."""
+    kept: Dict[str, List[str]] = {}
+    for key, values in enumerations.items():
+        prop = key.rsplit(".", 1)[-1]
+        informative = [v for v in values if not is_self_named(prop, v)]
+        if informative:
+            kept[key] = informative
+    return kept
+
+
 def _is_categorical(values: List[Any]) -> bool:
     """Decide if sampled values look like a categorical string enum."""
     if not values:
@@ -90,7 +131,9 @@ def sample_value_enumerations(
     * the property is not in ``EXCLUDE_PROPS``,
     * the distinct count is ``<= max_cardinality``,
     * all values are non-empty strings averaging less than
-      ``MAX_VALUE_LENGTH`` chars.
+      ``MAX_VALUE_LENGTH`` chars,
+    * at least one value is not a placeholder (:func:`is_self_named`);
+      placeholders are dropped from the list.
     """
     enumerations: Dict[str, List[str]] = {}
     pairs_examined = 0
@@ -149,6 +192,7 @@ def sample_value_enumerations(
                 values = [r["v"] for r in rows]
                 if len(values) > max_cardinality:
                     continue
+                values = [v for v in values if not is_self_named(prop_name, v)]
                 if not _is_categorical(values):
                     continue
 
@@ -456,9 +500,11 @@ def generate_few_shot_examples(
     relationship actually exists in this graph; values are read from
     ``enumerations`` (sampled separately) or sourced just-in-time from
     the driver. Examples that fail to execute are dropped — the prompt
-    must never advertise a query that breaks.
+    must never advertise a query that breaks. Placeholder values
+    (:func:`is_self_named`) are never used, even when ``enumerations`` was
+    sampled before they were filtered out (an older bundle).
     """
-    enumerations = enumerations or {}
+    enumerations = _drop_self_named(enumerations or {})
 
     label_counts: Dict[str, int] = {}
     relationships: Set[str] = set()
