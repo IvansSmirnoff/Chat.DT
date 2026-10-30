@@ -200,6 +200,10 @@ def export_with_meta(driver, out_path: Path, model_id: str, enrichment: str = "b
     """
     meta = {"model_id": model_id, "enrichment": enrichment,
             "loader_rev": loader_revision(sources=loader_sources)}
+    if enrichment == "topology":  # v1 and v2 snapshots differ in content, not in name
+        from src.etl.topology import TOPOLOGY_REV
+
+        meta["topology_rev"] = TOPOLOGY_REV
     if ifc:
         meta["source_ifc"] = str(ifc)
         meta["source_sha256"] = sha256_file(Path(ifc))
