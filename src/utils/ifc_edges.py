@@ -107,14 +107,19 @@ FLATTENED_RELATIONSHIPS = {
 #: the schema prompt explains whichever of them the loaded graph carries.
 DERIVED_EDGE_NOTES = {
     "CONNECTED_VIA": (
-        "rooms connected through a door (props door_gid, door_name). Stored in both "
-        "directions: use DISTINCT or an undirected pattern when counting"
+        "rooms on opposite sides of a door (props door_gid, door_name, door_source). Stored in "
+        "both directions: use DISTINCT or an undirected pattern when counting"
+    ),
+    "OPEN_TO": (
+        "spaces joined by a doorless opening, with no wall or door between them. Stored in both "
+        "directions. Walkable connections between spaces are CONNECTED_VIA or OPEN_TO"
     ),
     "ADJACENT_TO": (
         "rooms that physically touch on the same storey: across a shared wall "
-        "(method='wall', via_gid = that wall) or open plan (method='open'); props gap_m, "
-        "shared_len_m. Stored in both directions. Two rooms bounded by the same "
-        "element (BOUNDED_BY) are NOT necessarily adjacent: a corridor wall bounds rooms metres apart"
+        "(method='wall', via_gid = that wall) or with nothing between them (method='open', "
+        "every OPEN_TO pair); props gap_m, shared_len_m. Stored in both directions. Two rooms "
+        "bounded by the same element (BOUNDED_BY) are NOT necessarily adjacent: a corridor wall "
+        "bounds rooms metres apart"
     ),
     "VERTICAL_ACCESS": "stair, ramp or lift -> each storey it serves",
 }
@@ -125,7 +130,7 @@ DERIVED_PROPERTY_NOTES = {
     "geo_z_min, geo_z_max": "height range in metres",
     "geo_footprint_m2": "plan footprint area in m² (rooms: floor outline)",
     "is_exterior_door": (
-        "on doors: true if the door leads outside (external boundary, or it bounds one room). "
+        "on doors: true if the door leads outside (external boundary, or a room on one side only). "
         "True for every such door -- entrances, service doors, emergency exits alike; "
         "it does not say which one is the main entrance"
     ),
