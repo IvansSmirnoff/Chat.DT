@@ -17,8 +17,18 @@ set -euo pipefail
 NEO4J_VERSION="${NEO4J_VERSION:-5.26.31}"
 NEO4J_HOME="${NEO4J_HOME:-/opt/neo4j}"
 NEO4J_PASSWORD="${NEO4J_PASSWORD:-password}"
-HEAP="${NEO4J_HEAP_MAX:-4g}"
-PAGECACHE="${NEO4J_PAGECACHE:-2g}"
+# Memory scales with the VM unless set: a Colab high-RAM runtime (~51 GB) gets
+# 16g heap + 8g pagecache to ETL the big models (sixty5 is 343 MB) and still
+# leaves ~25 GB to the runner (ifcopenshell holds the whole model, the topology
+# pass its geometry). A standard runtime (~13 GB) keeps 4g + 2g.
+RAM_GB="$(awk '/^MemTotal:/ {print int($2 / 1048576)}' /proc/meminfo)"
+if [ "${RAM_GB}" -ge 40 ]; then
+  HEAP="${NEO4J_HEAP_MAX:-16g}"
+  PAGECACHE="${NEO4J_PAGECACHE:-8g}"
+else
+  HEAP="${NEO4J_HEAP_MAX:-4g}"
+  PAGECACHE="${NEO4J_PAGECACHE:-2g}"
+fi
 TARBALL="neo4j-community-${NEO4J_VERSION}-unix.tar.gz"
 URL="https://dist.neo4j.org/${TARBALL}"
 
@@ -77,7 +87,7 @@ fi
 for i in $(seq 1 90); do
   if "${NEO4J_HOME}/bin/cypher-shell" -a bolt://127.0.0.1:7687 -u neo4j -p "${NEO4J_PASSWORD}" \
        "RETURN 1" >/dev/null 2>&1; then
-    log "Neo4j ${NEO4J_VERSION} up on bolt://127.0.0.1:7687 after ${i}s (heap ${HEAP}, pagecache ${PAGECACHE})"
+    log "Neo4j ${NEO4J_VERSION} up on bolt://127.0.0.1:7687 after ${i}s (RAM ${RAM_GB} GB: heap ${HEAP}, pagecache ${PAGECACHE})"
     exit 0
   fi
   sleep 1
