@@ -123,6 +123,15 @@ DERIVED_EDGE_NOTES = {
         "necessarily adjacent: a corridor wall bounds rooms metres apart"
     ),
     "VERTICAL_ACCESS": "stair, ramp or lift -> each storey it serves",
+    "HAS_DOOR": (
+        "room -> each door in its outline: both rooms of a door between two rooms, the one room of "
+        "an exterior door, the room itself for a door inside it; prop source ('boundary' or "
+        "'geometry'). Use it for a room's doors; CONNECTED_VIA to go from room to room"
+    ),
+    "HAS_WINDOW": (
+        "room -> each window in its outline (both rooms of a window between two rooms); prop source "
+        "('boundary' or 'geometry'). Use it for a room's windows"
+    ),
 }
 
 #: Node properties the same enrichment writes.

@@ -358,6 +358,134 @@ def test_geometry_edges_carry_their_source():
                                                "OPEN_TO/geometry": 1, "OPEN_TO/virtual_boundary": 1}
 
 
+# -----------------------------------------------------------------------------
+# Rooms -> their doors and windows (HAS_DOOR, HAS_WINDOW)
+# -----------------------------------------------------------------------------
+
+def _sides_of(rooms, element, x_axis=(0.0, 1.0)):
+    return tp.room_sides(rooms, tp.door_side_boxes(element, x_axis))
+
+
+def test_a_door_between_two_rooms_belongs_to_both():
+    door = box(4.0, 1.0, 4.12, 2.0)                       # in the A|B wall
+    sides = {"d": _sides_of(ROOMS, door)}
+    rows, stats = tp.room_openings({"d": set()}, sides, use_geometry=True)
+    assert rows == [("A", "d", "geometry"), ("B", "d", "geometry")] and stats == {"geometry_beside": 1}
+    # C sits above A and touches neither of the door's sides.
+    assert sides["d"]["C"] == set()
+
+
+def test_a_door_inside_one_room_belongs_to_that_room():
+    # A toilet cubicle's partition door: the toilet's footprint runs under both sides of it.
+    toilet = {"toilet": box(0, 0, 4, 3), "next door": box(4.12, 0, 8, 3)}
+    cubicle_door = box(1.0, 1.5, 1.8, 1.55)
+    sides = {"d": _sides_of(toilet, cubicle_door, (1.0, 0.0))}
+    assert sides["d"] == {"toilet": {1, -1}, "next door": set()}
+    rows, stats = tp.room_openings({"d": set()}, sides, use_geometry=True)
+    assert rows == [("toilet", "d", "geometry")] and stats == {"geometry_around": 1}
+
+
+def test_an_exterior_door_or_window_belongs_to_its_one_room():
+    front = box(-0.12, 1.0, 0.0, 2.0)                     # in A's outer wall, nothing beyond
+    sides = {"front": _sides_of(ROOMS, front), "win": _sides_of(ROOMS, box(1.0, -0.12, 2.0, 0.0), (1.0, 0.0))}
+    rows, _ = tp.room_openings({"front": set(), "win": set()}, sides, use_geometry=True)
+    assert rows == [("A", "front", "geometry"), ("A", "win", "geometry")]
+
+
+def test_a_zone_around_a_door_with_rooms_beside_it_gets_nothing():
+    sides = {"d": {"gross area": {1, -1}, "office": {1}, "corridor": {-1}}, "lost": {}}
+    rows, stats = tp.room_openings({"d": set(), "lost": set()}, sides, use_geometry=True)
+    assert rows == [("corridor", "d", "geometry"), ("office", "d", "geometry")]
+    assert stats == {"geometry_beside": 1, "no_room": 1}
+
+
+def test_recorded_rooms_win_and_geometry_needs_asking():
+    sides = {"d": {"A": {1}, "B": {-1}, "C": {-1}}, "e": {"A": {1}}}
+    recorded = {"d": {"A", "B"}, "e": set()}
+    rows, stats = tp.room_openings(recorded, sides, use_geometry=True)
+    assert rows == [("A", "d", "boundary"), ("B", "d", "boundary"), ("A", "e", "geometry")]
+    rows, stats = tp.room_openings(recorded, sides)
+    assert rows == [("A", "d", "boundary"), ("B", "d", "boundary")] and stats == {"boundary": 1, "no_room": 1}
+
+
+def test_a_window_recorded_on_one_side_also_belongs_to_the_room_across_it():
+    # The clinic: windows recorded on the roof terrace only, never on the office behind them.
+    recorded = {"w": {"terrace"}, "twin": {"bath"}, "both": {"A", "B"}}
+    sides = {"w": {"terrace": {1}, "office": {-1}},
+             "twin": {"bath": {-1}, "hall": {-1}},          # one footprint exported twice: same side
+             "both": {"A": {1}, "B": {-1}, "C": {-1}}}      # recorded on both sides: complete
+    recorded_sides = {"w": {"terrace": {1}}, "twin": {"bath": {-1}}, "both": {"A": {1}, "B": {-1}}}
+    rows, stats = tp.room_openings(recorded, sides, use_geometry=True, recorded_sides=recorded_sides)
+    assert rows == [("A", "both", "boundary"), ("B", "both", "boundary"), ("bath", "twin", "boundary"),
+                    ("terrace", "w", "boundary"), ("office", "w", "geometry")]
+    assert stats == {"boundary": 3, "boundary_completed_across": 1}
+    # Doors do not pass recorded_sides: their records are two-sided on every boundary model.
+    rows, _ = tp.room_openings(recorded, sides, use_geometry=True)
+    assert ("office", "w", "geometry") not in rows
+    # Nor is the side test used where it is not trusted.
+    rows, _ = tp.room_openings(recorded, sides, recorded_sides=recorded_sides)
+    assert ("office", "w", "geometry") not in rows
+
+
+def test_room_door_and_window_edges_go_one_way_with_their_source():
+    geom = {g: ElementGeometry(f, 0.0, 3.0) for g, f in ROOMS.items()}
+    topo = tp.assemble([("A", "B", "d1", "boundary")], {"d1": "Door 1"}, [], [], geom, {"d1": False}, {},
+                       door_rooms=[("A", "d1", "boundary"), ("B", "d1", "boundary"), ("C", "d2", "geometry")],
+                       window_rooms=[("A", "w1", "geometry")])
+    assert topo.neighbours("HAS_DOOR", "A") == {"d1"} and topo.neighbours("HAS_DOOR", "C") == {"d2"}
+    assert not topo.neighbours("HAS_DOOR", "d1") and topo.neighbours("HAS_WINDOW", "A") == {"w1"}
+    door_edge = next(e for e in topo.edges if e.rel_type == "HAS_DOOR" and e.source == "C")
+    assert door_edge.props == {"source": "geometry", "enriched": True}
+    assert tp._edges_by_source(topo.edges) == {"CONNECTED_VIA/boundary": 1, "HAS_DOOR/boundary": 2,
+                                               "HAS_DOOR/geometry": 1, "HAS_WINDOW/geometry": 1}
+
+
+class _FakeSession:
+    """Counts what a query asks for: 1 for any relationship type in ``present``."""
+
+    def __init__(self, present=(), log=None):
+        self.present, self.log = present, log if log is not None else []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def run(self, query, **params):
+        self.log.append(query)
+        hit = any(f"`{rel}`" in query for rel in self.present) and query.startswith("MATCH ()-[r:")
+
+        class _Result:
+            def single(self_inner):
+                return {"c": int(hit)}
+        return _Result()
+
+
+class _FakeDriver:
+    def __init__(self, present=()):
+        self.log = []
+        self.present = present
+
+    def session(self):
+        return _FakeSession(self.present, self.log)
+
+
+def test_a_graph_carrying_room_door_edges_is_refused_and_remove_deletes_them(monkeypatch):
+    from src.etl import graph_cache
+
+    assert {"HAS_DOOR", "HAS_WINDOW"} <= set(tp.DERIVED_REL_TYPES)
+    for rel in ("HAS_DOOR", "HAS_WINDOW"):
+        with pytest.raises(RuntimeError, match=rf"already carries enrichment names \['{rel}'\]"):
+            tp.apply_topology(_FakeDriver(present=(rel,)), tp.Topology())
+    monkeypatch.setattr(graph_cache, "read_meta", lambda driver: None)
+    driver = _FakeDriver()
+    removed = tp.remove_topology(driver)
+    assert removed["HAS_DOOR"] == 0 and removed["HAS_WINDOW"] == 0
+    for rel in ("HAS_DOOR", "HAS_WINDOW"):
+        assert f"MATCH ()-[r:`{rel}`]->() WHERE r.enriched = true DELETE r RETURN count(r) AS c" in driver.log
+
+
 def test_vertical_access_serves_storeys_within_the_height_range():
     pairs = tp.vertical_access({"stair": (-0.01, 5.67), "ramp": (-1.0, 0.0)},
                                {"footing": -1.0, "first": 0.0, "second": 4.57, "roof": 9.25})
@@ -372,7 +500,9 @@ def _small_topology():
     geom = {g: ElementGeometry(f, 0.0, 3.0) for g, f in ROOMS.items()}
     adjacency, _ = tp.adjacent_pairs({("A", "B"): ["w1"]}, ROOMS, {k: "s1" for k in ROOMS})
     return tp.assemble([("A", "B", "d1", "boundary")], {"d1": "Door 1"}, adjacency, [("stair", "s2")],
-                       geom, {"d1": False}, {("A", "w1"): True, ("B", "w1"): False}, [("A", "C")])
+                       geom, {"d1": False}, {("A", "w1"): True, ("B", "w1"): False}, [("A", "C")],
+                       door_rooms=[("A", "d1", "boundary"), ("B", "d1", "boundary")],
+                       window_rooms=[("A", "win1", "geometry")])
 
 
 def test_symmetric_edges_are_stored_both_ways_and_all_enriched():
@@ -427,6 +557,16 @@ def test_open_to_note_says_what_is_walkable():
     assert "Walkable connections between spaces are CONNECTED_VIA or OPEN_TO" in text
 
 
+def test_has_door_note_sends_room_to_room_moves_to_connected_via():
+    vocab = CombinedVocabulary(relationship_signatures=[
+        ("IfcSpace", "HAS_DOOR", "IfcDoor"), ("IfcSpace", "HAS_WINDOW", "IfcWindow")])
+    text = get_system_schema_string(vocab)
+    assert "HAS_DOOR: room -> each door in its outline" in text
+    assert "Use it for a room's doors; CONNECTED_VIA to go from room to room" in text
+    assert "HAS_WINDOW: room -> each window in its outline" in text
+    assert "CONNECTED_VIA:" not in text
+
+
 # -----------------------------------------------------------------------------
 # The clinic (train-data checks from the plan)
 # -----------------------------------------------------------------------------
@@ -470,7 +610,8 @@ def test_clinic_doors_walls_and_stairs(clinic):
                                     "trusted": True, "geometry_used": True}
     assert s["spaces_with_boundaries"] == 269 and s["edges_by_source"] == {
         "ADJACENT_TO/boundary/open": 56, "ADJACENT_TO/boundary/wall": 591,
-        "CONNECTED_VIA/boundary": 230, "OPEN_TO/virtual_boundary": 56}
+        "CONNECTED_VIA/boundary": 230, "OPEN_TO/virtual_boundary": 56,
+        "HAS_DOOR/boundary": 466, "HAS_DOOR/geometry": 18, "HAS_WINDOW/boundary": 18, "HAS_WINDOW/geometry": 58}
     # The reportable over-return of "shares a wall" as adjacency.
     assert s["adjacency"]["wall_pairs_same_storey"] == 1037
     assert s["adjacency"]["wall_pairs_over_return"] == pytest.approx(0.375, abs=0.01)
@@ -518,6 +659,64 @@ def test_clinic_doors_without_boundaries(clinic):
     assert main_entrance <= exterior
 
 
+def _members(topo, rel):
+    """element -> {(room, source)} of HAS_DOOR / HAS_WINDOW."""
+    out = {}
+    for e in topo.edges:
+        if e.rel_type == rel:
+            out.setdefault(e.target, set()).add((e.source, e.props["source"]))
+    return out
+
+
+# The clinic's 18 doors without space boundaries (README of the authored questions).
+CLINIC_UNBOUNDED_DOORS = {
+    "1AC1": {"3o5ntlA212uQCF0q6eQsZI", "0otfaO0qPDAhynjJ6DnLXx"},          # main entrance, exported twice
+    "1F01": {"1I_Rp6d3j27fE7zFUMgaqf", "2NHD_$8fb3ZexljM$wSStT",            # the two yard gates, twice each
+             "1I_Rp6d3j27fE7zFUMgaqj", "3eIXtbz01CQuZOCQ8qhuxf"},
+    "1DC1": {"0bpfxAz3XBrAx$RjFuHvgA", "1oCmeD_UH0NAQ13DTKAKXn",            # storefront doors inside it, twice each
+             "0bpfxAz3XBrAx$RjFuHv4q", "3LjuaIy0TB9BYwqsSadrQS"},
+    "1A09": {"3qpE7fVkr8dRZ2wfCc6tWA", "3qpE7fVkr8dRZ2wfCc6tjC"},          # toilet cubicles
+    "1A12": {"3qpE7fVkr8dRZ2wfCc6tpH"},
+    "2C07": {"0ClPCUC7jCQRnj1dhupHk0"},
+    "2C08": {"35QeWibpT4DfyH3NIf2nOv"},
+    "2C23": {"3qpE7fVkr8dRZ2wfCc6tsf"},
+    "2C24": {"3qpE7fVkr8dRZ2wfCc6tw0", "3qpE7fVkr8dRZ2wfCc6tut"},
+}
+
+
+def test_clinic_every_door_belongs_to_its_rooms(clinic):
+    topo, gid, name, _ = clinic
+    doors = _members(topo, "HAS_DOOR")
+    assert len(doors) == 254 and topo.stats["door_rooms"] == {
+        "boundary": 236, "geometry_around": 12, "geometry_beside": 6}
+    # Doors with boundaries: exactly their recorded rooms (10 x 1 + 222 x 2 + 4 x 3).
+    assert sum(len(r) for d, r in doors.items() if {s for _, s in r} == {"boundary"}) == 466
+    # The 18 without: the room each one leads out of, or sits inside.
+    for room, unbounded in CLINIC_UNBOUNDED_DOORS.items():
+        for door in unbounded:
+            assert doors[door] == {(gid[room], "geometry")}, (room, door)
+    assert sum(len(v) for v in CLINIC_UNBOUNDED_DOORS.values()) == 18
+    # Every door a room is connected through is one of its doors.
+    for e in topo.edges:
+        if e.rel_type == "CONNECTED_VIA":
+            assert (e.source, "boundary") in doors[e.props["door_gid"]]
+
+
+def test_clinic_windows_recorded_on_the_roof_also_belong_to_the_room_behind(clinic):
+    topo, gid, name, _ = clinic
+    windows = _members(topo, "HAS_WINDOW")
+    assert len(windows) == 58 and topo.stats["window_rooms"] == {
+        "boundary": 18, "boundary_completed_across": 18, "geometry_beside": 40}
+    # 2D17's window: recorded on the roof terrace 2R02 only.
+    assert windows["0otfaO0qPDAhynjJ6Dmg4K"] == {(gid["2R02"], "boundary"), (gid["2D17"], "geometry")}
+    recorded = {w for w, rooms in windows.items() if any(s == "boundary" for _, s in rooms)}
+    assert {name[r] for w in recorded for r, s in windows[w] if s == "boundary"} == {"2R01", "2R02"}
+    assert all(len(windows[w]) == 2 for w in recorded)
+    # The other 40: one room each, never a roof.
+    others = [rooms for w, rooms in windows.items() if w not in recorded]
+    assert all(len(rooms) == 1 and not name[next(iter(rooms))[0]].startswith("2R") for rooms in others)
+
+
 def _pairs(topo, rel, with_door=False):
     return {((e.props["door_gid"],) if with_door else ()) + (e.source, e.target)
             for e in topo.edges if e.rel_type == rel and e.source < e.target}
@@ -548,6 +747,19 @@ def test_clinic_from_geometry_alone_reproduces_its_boundaries(clinic, clinic_geo
     assert len(_pairs(geo, "ADJACENT_TO") - _pairs(ref, "ADJACENT_TO")) == 28
     exterior = {g for g, p in ref.node_props.items() if p.get("is_exterior_door")}
     assert {g for g, p in geo.node_props.items() if p.get("is_exterior_door")} == exterior
+    # Rooms of a door: on the 236 doors with boundaries, every geometric room is
+    # a recorded one; the one missed is 2CC3 again (the jamb of the 2C12 door).
+    # The 18 without boundaries get the same rooms either way.
+    ref_doors, geo_doors = _members(ref, "HAS_DOOR"), _members(geo, "HAS_DOOR")
+    recorded = {d for d, rooms in ref_doors.items() if {s for _, s in rooms} == {"boundary"}}
+    ref_pairs = {(r, d) for d in recorded for r, _ in ref_doors[d]}
+    geo_pairs = {(r, d) for d in recorded for r, _ in geo_doors.get(d, ())}
+    assert geo_pairs < ref_pairs and len(ref_pairs - geo_pairs) == 1
+    assert {d: geo_doors[d] for d in ref_doors if d not in recorded} == \
+        {d: rooms for d, rooms in ref_doors.items() if d not in recorded}
+    # Windows: the 18 recorded on a roof terrace, plus the office across each.
+    assert _members(geo, "HAS_WINDOW") == {w: {(r, "geometry") for r, _ in rooms}
+                                          for w, rooms in _members(ref, "HAS_WINDOW").items()}
 
 
 def test_second_level_virtual_boundaries_are_read(data_dir):
@@ -573,6 +785,10 @@ def test_spaces_under_the_site_get_a_level_from_their_floor(data_dir):
     assert topo.stats["spaces_without_storey_in_ifc"] == 22 and topo.stats["spaces_without_storey"] == 0
     assert topo.stats["storey_levels"] == {"level_from_floor_height": 22}
     assert topo.stats["edges_by_source"].get("CONNECTED_VIA/geometry", 0) > 0
+    # No space boundaries: every door with a room beside or around it is placed by
+    # geometry; the 22 left are on the upper floors, which have no spaces.
+    assert topo.stats["door_rooms"] == {"geometry_around": 4, "geometry_beside": 31, "no_room": 22}
+    assert topo.stats["edges_by_source"]["HAS_DOOR/geometry"] == 43
 
 
 def test_structural_model_has_stairs_but_no_rooms(data_dir):
@@ -624,12 +840,17 @@ def test_live_apply_then_remove_restores_the_base_graph(neo4j_driver, data_dir, 
         assert written["unmatched_edges"] == {}
         assert written["CONNECTED_VIA"] == topo.stats["edges"]["CONNECTED_VIA"]
         assert written["OPEN_TO"] == topo.stats["edges"]["OPEN_TO"]
+        assert written["HAS_DOOR"] == topo.stats["edges"]["HAS_DOOR"] == 466 + 18
+        assert written["HAS_WINDOW"] == topo.stats["edges"]["HAS_WINDOW"]
         with neo4j_driver.session() as s:
             adj = s.run("MATCH (:IfcSpace {Name: '1B07'})-[:ADJACENT_TO]->(b:IfcSpace) "
                         "RETURN collect(DISTINCT b.Name) AS n").single()["n"]
             con = s.run("MATCH (:IfcSpace {Name: '1B07'})-[:CONNECTED_VIA]-(b:IfcSpace) "
                         "RETURN collect(DISTINCT b.Name) AS n").single()["n"]
+            entrance = s.run("MATCH (:IfcSpace {Name: '1AC1'})-[:HAS_DOOR {source: 'geometry'}]->(d:IfcDoor) "
+                             "RETURN collect(d.GlobalId) AS g").single()["g"]
         assert set(adj) == {"1B04", "1B05", "1B09", "1BC2"} and set(con) == {"1BC2"}
+        assert set(entrance) == CLINIC_UNBOUNDED_DOORS["1AC1"]
         meta = gc.read_meta(neo4j_driver)
         assert meta["enrichment"] == "topology" and meta["topology_rev"] == tp.TOPOLOGY_REV
         assert meta["fingerprint"] == gc.fingerprint(gc.graph_summary(neo4j_driver)) != base

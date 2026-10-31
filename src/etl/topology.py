@@ -44,6 +44,20 @@ little geometry (room and wall footprints, door placements,
   between their footprints.
 * ``(:IfcStair|IfcRamp|IfcTransportElement)-[:VERTICAL_ACCESS]->(:IfcBuildingStorey)``
   -- every storey whose elevation lies within the element's height range.
+* ``(:IfcSpace)-[:HAS_DOOR {source}]->(:IfcDoor)`` and
+  ``(:IfcSpace)-[:HAS_WINDOW {source}]->(:IfcWindow)`` -- every room a door
+  or window belongs to, stored one way. ``BOUNDED_BY`` reaches a door from a
+  room only where the IFC exports the door's space boundaries: on the clinic,
+  18 of 254 doors have none (the main entrance, the yard gates, the toilet
+  cubicles, the curtain-wall doors inside 1DC1), so no query could go from
+  1AC1 to its own entrance; models without boundaries reach no door at all.
+  ``source = "boundary"``: the rooms the element's boundaries record.
+  ``source = "geometry"``: without boundaries, the rooms on either side of the
+  leaf (the side test below), or the room around it when no room is on one
+  side only (a cubicle door inside its toilet). Windows also get the rooms
+  across the leaf from a one-sided record (the clinic records 18 windows on
+  its roof terraces only). Curtain-wall doors exported twice (the clinic's
+  entrance, gates and 1DC1 doors) get edges on both copies.
 * node properties: ``geo_cx/geo_cy`` (footprint centroid), ``geo_z_min/geo_z_max``,
   ``geo_footprint_m2`` on rooms, doors, windows and vertical-access elements;
   ``is_exterior_door`` on doors: an EXTERNAL boundary or exactly one bounded
@@ -65,7 +79,14 @@ a model whose boundaries are complete, like the clinic, never reaches it.
 is how the fallback was validated on the seven models that have them
 (dental_clinic, ac20, smiley_west, wbdg_office, duplex, fzk_house, 4351):
 geometry alone gives every boundary door link but one (a clinic corridor that
-touches only a door's jamb) and nothing more, and every open passage.
+touches only a door's jamb) and nothing more, and every open passage. The
+rooms of a door (``HAS_DOOR``) from geometry alone match 1,127 of the 1,130
+recorded (room, door) pairs with 7 extra (two spaces exported with one
+footprint, smiley_west); missed are rooms touching only a jamb or stopping
+0.18 m short of the door. Windows: exact on ac20, fzk_house, 4351 and duplex
+(but two corner slivers); the extras are smiley_west's twin footprints and the
+clinic's offices behind windows recorded only on the roof terrace (each office
+records the window's host wall).
 
 Door sides. A door's placement x-axis runs along the wall, so the leaf
 separates two half-planes; a room is on a side if a fair share of its
@@ -151,10 +172,13 @@ ENRICHMENT = "topology"
 #: takes precedence in ADJACENT_TO), door side test, doors without boundaries.
 #: 3: geometry fallback for spaces and doors without space boundaries (door
 #: passage through the host wall, ADJACENT_TO/OPEN_TO from footprints and wall
-#: geometry, ``source`` on every edge), storeys from floor heights.
-TOPOLOGY_REV = 3
+#: geometry, ``source`` on every edge), storeys from floor heights. 4: HAS_DOOR
+#: and HAS_WINDOW, room -> each door and window it has (boundaries, else the
+#: side test).
+TOPOLOGY_REV = 4
 SYMMETRIC_TYPES = ("CONNECTED_VIA", "ADJACENT_TO", "OPEN_TO")
-DERIVED_REL_TYPES = SYMMETRIC_TYPES + ("VERTICAL_ACCESS",)
+ROOM_OPENING_TYPES = ("HAS_DOOR", "HAS_WINDOW")
+DERIVED_REL_TYPES = SYMMETRIC_TYPES + ("VERTICAL_ACCESS",) + ROOM_OPENING_TYPES
 NODE_PROPS = ("geo_cx", "geo_cy", "geo_z_min", "geo_z_max", "geo_footprint_m2", "is_exterior_door")
 BOUNDED_BY_PROPS = ("is_external",)
 
@@ -447,6 +471,55 @@ def door_space_pairs(
             else:
                 stats["unbounded_no_room"] += 1
     return pairs, exterior, dict(stats)
+
+
+def room_openings(
+    recorded: Mapping[str, Set[str]],
+    sides: Mapping[str, Sides],
+    use_geometry: bool = False,
+    recorded_sides: Optional[Mapping[str, Sides]] = None,
+) -> Tuple[List[Tuple[str, str, str]], Dict[str, int]]:
+    """(room, door or window, source) for every room a door (or window) belongs to.
+
+    An element with space boundaries belongs to every room they record
+    (``source = "boundary"``). Without them, and with ``use_geometry``: to the
+    rooms on either side of its leaf (``sides``, from ``room_sides``); if no
+    room is on just one side, to the room around it -- a toilet cubicle's door
+    inside the toilet (``source = "geometry"``). A room around an element that
+    also has rooms beside it (a gross-area zone, a footprint exported twice)
+    gets nothing: the rooms beside it are the ones it opens onto.
+
+    ``recorded_sides`` (the sides of the recorded rooms, for windows): an
+    element whose recorded rooms are all on one side of its leaf also belongs
+    to the rooms on the other side (``source = "geometry"``). Window
+    boundaries are often recorded from one side only: the clinic records 18
+    windows on its roof terraces and none on the offices behind them.
+    """
+    out: List[Tuple[str, str, str]] = []
+    stats: Counter = Counter()
+    for gid in sorted(set(recorded) | (set(sides) if use_geometry else set())):
+        rooms = recorded.get(gid)
+        if rooms:
+            out += [(room, gid, "boundary") for room in sorted(rooms)]
+            stats["boundary"] += 1
+            if use_geometry and recorded_sides is not None:
+                held = set().union(*(recorded_sides.get(gid, {}).get(r, set()) for r in rooms))
+                far = {-side for side in held}
+                across = sorted(r for r, s in sides.get(gid, {}).items()
+                                if len(held) == 1 and s == far and r not in rooms)
+                out += [(room, gid, "geometry") for room in across]
+                if across:
+                    stats["boundary_completed_across"] += 1
+            continue
+        if not use_geometry or gid not in sides:
+            stats["no_room"] += 1
+            continue
+        beside = {r for r, s in sides[gid].items() if len(s) == 1}
+        around = {r for r, s in sides[gid].items() if len(s) == 2}
+        rooms = beside or around
+        out += [(room, gid, "geometry") for room in sorted(rooms)]
+        stats[("geometry_beside" if beside else "geometry_around") if rooms else "no_room"] += 1
+    return out, dict(sorted(stats.items()))
 
 
 def exterior_doors(door_spaces: Mapping[str, Set[str]], external: Mapping[str, bool],
@@ -777,11 +850,15 @@ def assemble(
     boundary_external: Mapping[Pair, bool],
     passages: Iterable[Pair] = (),
     geometric_passages: Iterable[Pair] = (),
+    door_rooms: Iterable[Tuple[str, str, str]] = (),
+    window_rooms: Iterable[Tuple[str, str, str]] = (),
 ) -> Topology:
     """Edges (symmetric ones both ways) and properties, every name from the declared lists.
 
     ``passages`` come from virtual boundaries, ``geometric_passages`` from
     footprints and wall geometry (``OPEN_TO.source`` says which).
+    ``door_rooms``/``window_rooms``: (room, element, source) from
+    ``room_openings``, written room -> element only.
     """
     topo = Topology()
 
@@ -801,6 +878,9 @@ def assemble(
         both_ways("ADJACENT_TO", p["a"], p["b"], {k: v for k, v in p.items() if k not in ("a", "b")})
     for el, storey in access:
         topo.edges.append(Edge("VERTICAL_ACCESS", el, storey, {"enriched": True}))
+    for rel, rows in (("HAS_DOOR", door_rooms), ("HAS_WINDOW", window_rooms)):
+        for room, element, source in rows:
+            topo.edges.append(Edge(rel, room, element, {"source": source, "enriched": True}))
     for gid, g in geometry.items():
         cx, cy = g.centroid
         topo.node_props[gid] = {"geo_cx": round(cx, 3), "geo_cy": round(cy, 3),
@@ -1047,46 +1127,53 @@ def compute_topology(ifc_path: Path, max_gap: float = MAX_GAP_M,
                 if not getattr(rel.RelatedOpeningElement, "HasFillings", None)]
     openings = iterate_geometry(model, unfilled, settings)
 
-    # Doors: which rooms touch the way through the wall, and on which side of the leaf.
+    # Doors and windows: which rooms touch the way through the wall, and on which side of the leaf.
     room_keys = sorted(footprints)
     room_tree = STRtree([footprints[k] for k in room_keys])
-    door_spaces = {d: set(element_spaces.get(d, ())) for d in doors}
-    door_sides: Dict[str, Sides] = {}        # the rule for doors without boundaries
-    bounded_sides: Dict[str, Sides] = {}     # which side each of a door's recorded rooms is on
-    hosts: Counter = Counter()
-    thickness: List[float] = []
-    for gid, door in doors.items():
-        g = geometry.get(gid)
-        if g is None or door.ObjectPlacement is None:
-            continue
-        host = _ifc_host(door)
-        host_gid = host.GlobalId if host is not None and host.GlobalId in walls else None
-        hosts["ifc" if host_gid else "geometry"] += 1
-        if host_gid is None:
-            host_gid = _geometric_host(g, walls, wall_tree, wall_keys)
-            if host_gid is None:
-                hosts["geometry"] -= 1
-                hosts["none"] += 1
-        host_fp = walls[host_gid].footprint if host_gid else None
-        matrix = up.get_local_placement(door.ObjectPlacement)
-        axis = door_axis(g.footprint, (float(matrix[0][0]), float(matrix[1][0])), host_fp)
-        passage, t = door_passage(g.footprint, axis, host_fp)
-        if t is not None:
-            thickness.append(t)
-        height = max(g.z_max - g.z_min, 1e-6)
-        touching = {}
-        for j in room_tree.query(passage.buffer(DOOR_TOUCH_M)):
-            room = room_keys[int(j)]
-            rg = geometry[room]
-            if min(g.z_max, rg.z_max) - max(g.z_min, rg.z_min) < DOOR_Z_OVERLAP * height:
+
+    def leaf_sides(elements: Mapping[str, Any], recorded: Mapping[str, Set[str]]
+                   ) -> Tuple[Dict[str, Sides], Dict[str, Sides], Counter, List[float]]:
+        """For each door (or window): the side test's rooms, the recorded rooms' sides, hosts, wall thickness."""
+        sides: Dict[str, Sides] = {}             # the rule for elements without boundaries
+        recorded_sides: Dict[str, Sides] = {}    # which side each of its recorded rooms is on
+        hosts: Counter = Counter()
+        thickness: List[float] = []
+        for gid, element in elements.items():
+            g = geometry.get(gid)
+            if g is None or element.ObjectPlacement is None:
                 continue
-            if footprints[room].distance(passage) <= DOOR_TOUCH_M:
-                touching[room] = footprints[room]
-        boxes = side_boxes(passage, axis)
-        door_sides[gid] = room_sides(touching, boxes)
-        if door_spaces[gid]:
-            # The boundaries already say the room is on the door; only its side is asked.
-            bounded_sides[gid] = room_sides(touching, boxes, box_share=0.0)
+            host = _ifc_host(element)
+            host_gid = host.GlobalId if host is not None and host.GlobalId in walls else None
+            hosts["ifc" if host_gid else "geometry"] += 1
+            if host_gid is None:
+                host_gid = _geometric_host(g, walls, wall_tree, wall_keys)
+                if host_gid is None:
+                    hosts["geometry"] -= 1
+                    hosts["none"] += 1
+            host_fp = walls[host_gid].footprint if host_gid else None
+            matrix = up.get_local_placement(element.ObjectPlacement)
+            axis = door_axis(g.footprint, (float(matrix[0][0]), float(matrix[1][0])), host_fp)
+            passage, t = door_passage(g.footprint, axis, host_fp)
+            if t is not None:
+                thickness.append(t)
+            height = max(g.z_max - g.z_min, 1e-6)
+            touching = {}
+            for j in room_tree.query(passage.buffer(DOOR_TOUCH_M)):
+                room = room_keys[int(j)]
+                rg = geometry[room]
+                if min(g.z_max, rg.z_max) - max(g.z_min, rg.z_min) < DOOR_Z_OVERLAP * height:
+                    continue
+                if footprints[room].distance(passage) <= DOOR_TOUCH_M:
+                    touching[room] = footprints[room]
+            boxes = side_boxes(passage, axis)
+            sides[gid] = room_sides(touching, boxes)
+            if recorded[gid]:
+                # The boundaries already say the room is on the door; only its side is asked.
+                recorded_sides[gid] = room_sides(touching, boxes, box_share=0.0)
+        return sides, recorded_sides, hosts, thickness
+
+    door_spaces = {d: set(element_spaces.get(d, ())) for d in doors}
+    door_sides, bounded_sides, hosts, thickness = leaf_sides(doors, door_spaces)
 
     door_check = validate_door_sides(door_spaces, door_sides)
     # No door with boundaries to check the rule against: it stands on its
@@ -1107,6 +1194,17 @@ def compute_topology(ifc_path: Path, max_gap: float = MAX_GAP_M,
             geometric_exterior[d] = flag
             key = f"unbounded_exterior_{'set' if flag else 'cleared'}_by_property"
             door_stats[key] = door_stats.get(key, 0) + 1
+    door_rooms, door_room_stats = room_openings(door_spaces, door_sides, use_geometry)
+
+    # Windows: the same test, trusted where it is trusted for the doors (the
+    # larger sample; window records are often one-sided, so they cannot check
+    # it). Its agreement with the window records is reported, not used.
+    windows = {w.GlobalId: w for w in model.by_type("IfcWindow")}
+    window_spaces = {w: set(element_spaces.get(w, ())) for w in windows}
+    window_sides, window_recorded_sides, window_hosts, _ = leaf_sides(windows, window_spaces)
+    window_check = validate_door_sides(window_spaces, window_sides)
+    window_rooms, window_room_stats = room_openings(window_spaces, window_sides, use_geometry,
+                                                    recorded_sides=window_recorded_sides)
 
     wall_pairs: Dict[Pair, List[str]] = defaultdict(list)
     for el, rooms in element_spaces.items():
@@ -1129,7 +1227,7 @@ def compute_topology(ifc_path: Path, max_gap: float = MAX_GAP_M,
 
     exterior = exterior_doors(door_spaces, door_external, geometric_exterior)
     topo = assemble(connections, {d: doors[d].Name for d in doors}, adjacency + geo_adjacency, access, geometry,
-                    exterior, boundary_external, passages, geo_passages)
+                    exterior, boundary_external, passages, geo_passages, door_rooms, window_rooms)
     topo.stats = {
         "ifc": str(ifc_path),
         "rev": TOPOLOGY_REV,
@@ -1149,6 +1247,12 @@ def compute_topology(ifc_path: Path, max_gap: float = MAX_GAP_M,
         "door_hosts": dict(sorted(hosts.items())),
         "door_wall_thickness_m": _quantiles(thickness),
         "door_side_check": {**door_check, "geometry_used": use_geometry},
+        "door_rooms": door_room_stats,
+        "windows": len(windows),
+        "window_hosts": dict(sorted(window_hosts.items())),
+        "window_side_check": {**{k: v for k, v in window_check.items() if k != "trusted"},
+                              "geometry_used": use_geometry},
+        "window_rooms": window_room_stats,
         "exterior_doors": sum(exterior.values()),
         "open_passages": passage_stats,
         "adjacency": adj_stats,
@@ -1169,10 +1273,13 @@ def _quantiles(values: Sequence[float]) -> Optional[Dict[str, float]]:
 
 
 def _edges_by_source(edges: Sequence[Edge]) -> Dict[str, int]:
-    """Undirected pair counts per relation and provenance, e.g. ``ADJACENT_TO/geometry/wall``."""
+    """Undirected pair counts per relation and provenance, e.g. ``ADJACENT_TO/geometry/wall``.
+
+    ``HAS_DOOR``/``HAS_WINDOW`` are stored one way: every edge counts.
+    """
     out: Counter = Counter()
     for e in edges:
-        if e.rel_type in SYMMETRIC_TYPES and e.source < e.target:
+        if e.rel_type in SYMMETRIC_TYPES and e.source < e.target or e.rel_type in ROOM_OPENING_TYPES:
             src = e.props.get("door_source") or e.props.get("source")
             out["/".join(str(x) for x in (e.rel_type, src, e.props.get("method")) if x is not None)] += 1
     return dict(sorted(out.items()))
